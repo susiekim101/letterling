@@ -1,4 +1,47 @@
 -- Paste your SQL queries here
+-- Create the teachers/profiles table
+CREATE TABLE public.teachers (
+  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  full_name TEXT
+);
+
+-- Enable Row Level Security
+ALTER TABLE public.teachers ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policy: SELECT
+CREATE POLICY "Users can view their own profile"
+  ON public.teachers
+  FOR SELECT
+  USING (auth.uid() = id);
+
+-- RLS Policy: UPDATE
+CREATE POLICY "Users can update their own profile"
+  ON public.teachers
+  FOR UPDATE
+  USING (auth.uid() = id);
+
+-- RLS Policy: DELETE
+CREATE POLICY "Users can delete their own profile"
+  ON public.teachers
+  FOR DELETE
+  USING (auth.uid() = id);
+
+-- Trigger function: auto-insert into teachers when a new auth.users row is created
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.teachers (id, full_name)
+  VALUES (NEW.id, NEW.raw_user_meta_data->>'full_name');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Attach the trigger to auth.users
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_new_user();
+  
 -- Create the students table
 CREATE TABLE public.students (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -43,7 +86,7 @@ CREATE POLICY "Teachers can delete their own students"
   ON public.students
   FOR DELETE
   USING (auth.uid() = teacher_id);
-  
+
 -- Create the group status enum
 CREATE TYPE public.group_status AS ENUM ('active', 'inactive');
 
