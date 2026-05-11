@@ -53,15 +53,8 @@ type GroupState = {
 
 const cleanName = (s: string) => s.replace(/[^a-zA-Z]/g, '')
 
-function speak(text: string) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
-  try {
-    window.speechSynthesis.cancel()
-    const u = new SpeechSynthesisUtterance(text)
-    u.rate = 0.95
-    u.pitch = 1.1
-    window.speechSynthesis.speak(u)
-  } catch {}
+function stripEmotionTags(text: string) {
+  return text.replace(/\[.*?\]/g, '').trim()
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -95,7 +88,7 @@ export default function PlayPage({
   const { groupId } = use(params)
 
   const [state, setState] = useState<GroupState | null>(null)
-  const [stage, setStage] = useState<'pick' | 'write' | 'pass' | 'complete'>('pick')
+  const [stage, setStage] = useState<'pick' | 'write' | 'pass'>('pick')
   const [myStudentId, setMyStudentId] = useState<string | null>(null)
   const [letterStartIdx, setLetterStartIdx] = useState(0)
   const [pendingNext, setPendingNext] = useState<Student | null>(null)
@@ -107,6 +100,8 @@ export default function PlayPage({
   const [tool, setTool] = useState<'draw' | 'eraser'>('draw')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const editor = useRef<any>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const speechRequestIdRef = useRef(0)
 
   const fetchState = useCallback(async (): Promise<GroupState> => {
     const res = await fetch(`/api/play/${groupId}`)
@@ -116,11 +111,87 @@ export default function PlayPage({
     return data
   }, [groupId])
 
+  const stopAudioPlayback = useCallback(() => {
+    const audio = audioRef.current
+    if (audio) {
+      audio.pause()
+      audio.currentTime = 0
+      audioRef.current = null
+    }
+
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
+  }, [])
+
+  const playBrowserFallback = useCallback((text: string) => {
+    const cleanText = stripEmotionTags(text)
+    if (!cleanText || typeof window === 'undefined' || !('speechSynthesis' in window)) return
+
+    try {
+      window.speechSynthesis.cancel()
+      const utterance = new SpeechSynthesisUtterance(cleanText)
+      utterance.rate = 0.95
+      utterance.pitch = 1.1
+      window.speechSynthesis.speak(utterance)
+    } catch (error) {
+      console.warn('Browser TTS fallback failed', error)
+    }
+  }, [])
+
+  const playSpeech = useCallback(async (text: string) => {
+    const cleanText = text.trim()
+    if (!cleanText || typeof window === 'undefined') return
+
+    const requestId = ++speechRequestIdRef.current
+    stopAudioPlayback()
+
+    try {
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: cleanText }),
+      })
+
+      if (!res.ok) {
+        throw new Error(`TTS request failed with status ${res.status}`)
+      }
+
+      const { audioBase64 } = (await res.json()) as { audioBase64?: string }
+      if (!audioBase64 || requestId !== speechRequestIdRef.current) {
+        return
+      }
+
+      const audio = new Audio(`data:audio/mpeg;base64,${audioBase64}`)
+      audioRef.current = audio
+      await audio.play()
+    } catch (error) {
+      console.warn('Server TTS failed, using browser fallback', error)
+      if (requestId === speechRequestIdRef.current) {
+        playBrowserFallback(cleanText)
+      }
+    }
+  }, [playBrowserFallback, stopAudioPlayback])
+
   useEffect(() => {
-    fetchState().catch(console.error)
-    const interval = setInterval(() => fetchState().catch(console.error), 4000)
-    return () => clearInterval(interval)
+    const loadState = () => {
+      void fetchState().catch(console.error)
+    }
+
+    const timeout = window.setTimeout(loadState, 0)
+    const interval = window.setInterval(loadState, 4000)
+    return () => {
+      window.clearTimeout(timeout)
+      window.clearInterval(interval)
+    }
   }, [fetchState])
+
+  useEffect(() => {
+    return () => {
+      speechRequestIdRef.current += 1
+      stopAudioPlayback()
+    }
+  }, [stopAudioPlayback])
 
   useEffect(() => {
     if (!state) return
@@ -129,9 +200,9 @@ export default function PlayPage({
       state.progress.length > 0 &&
       state.progress.every((p) => p.finished_last_char)
     ) {
-      setStage('complete')
+      stopAudioPlayback()
     }
-  }, [state])
+  }, [state, stopAudioPlayback])
 
   const clearCanvas = useCallback(() => {
     const ed = editor.current
@@ -149,13 +220,19 @@ export default function PlayPage({
     )
   }
 
-  if (stage === 'complete') return <CompleteScreen students={state.students} />
+  const isComplete =
+    state.students.length > 0 &&
+    state.progress.length > 0 &&
+    state.progress.every((p) => p.finished_last_char)
+
+  if (isComplete) return <CompleteScreen students={state.students} />
 
   if (stage === 'pass' && pendingNext) {
     return (
       <PassScreen
         next={pendingNext}
         onReady={async () => {
+          stopAudioPlayback()
           await fetch(`/api/play/${groupId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -236,7 +313,7 @@ export default function PlayPage({
       })
       const data = await res.json()
       setFeedback({ text: data.feedbackText, success: data.isSuccessful })
-      speak(data.feedbackText)
+      void playSpeech(data.feedbackText)
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -256,7 +333,7 @@ export default function PlayPage({
     const myNew = s.progress.find((p) => p.student_id === myStudentId)!
 
     if (s.progress.every((p) => p.finished_last_char)) {
-      setStage('complete')
+      stopAudioPlayback()
       return
     }
 
@@ -265,9 +342,9 @@ export default function PlayPage({
       if (nextS) {
         setPendingNext(nextS)
         setStage('pass')
-        speak(`${nextS.first_name}, your turn!`)
+        void playSpeech(`${nextS.first_name}, your turn!`)
       } else {
-        setStage('complete')
+        stopAudioPlayback()
       }
       return
     }
@@ -278,7 +355,7 @@ export default function PlayPage({
       if (nextS) {
         setPendingNext(nextS)
         setStage('pass')
-        speak(`${nextS.first_name}, your turn!`)
+        void playSpeech(`${nextS.first_name}, your turn!`)
       }
     }
   }
@@ -421,10 +498,6 @@ function PickName({
 }
 
 function PassScreen({ next, onReady }: { next: Student; onReady: () => void }) {
-  useEffect(() => {
-    speak(`${next.first_name}, your turn!`)
-  }, [next.first_name])
-
   return (
     <main className="grid min-h-screen place-items-center bg-gradient-to-b from-accent/40 to-background px-6">
       <div className="text-center">
@@ -437,7 +510,7 @@ function PassScreen({ next, onReady }: { next: Student; onReady: () => void }) {
           onClick={onReady}
           className="mt-12 h-16 rounded-full px-12 text-2xl"
         >
-          I'm ready
+          I&apos;m ready
         </Button>
       </div>
     </main>
@@ -445,10 +518,6 @@ function PassScreen({ next, onReady }: { next: Student; onReady: () => void }) {
 }
 
 function CompleteScreen({ students }: { students: Student[] }) {
-  useEffect(() => {
-    speak('All done! Great job everyone!')
-  }, [])
-
   return (
     <main className="grid min-h-screen place-items-center bg-gradient-to-b from-background to-accent/40 px-6">
       <div className="text-center">

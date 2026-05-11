@@ -14,6 +14,11 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: 'text is required and must be under 500 characters' }, { status: 400 })
   }
 
-  const audioBase64 = await synthesizeSpeech(text)
-  return Response.json({ audioBase64 })
+  try {
+    const audioBase64 = await synthesizeSpeech(text)
+    return Response.json({ audioBase64 })
+  } catch (error) {
+    console.error('TTS error:', error)
+    return Response.json({ error: 'Failed to synthesize speech' }, { status: 500 })
+  }
 }
