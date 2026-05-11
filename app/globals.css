@@ -93,6 +93,12 @@
   --ring: oklch(0.75 0.15 35);
 }
 
+@keyframes burst-float {
+  0%   { transform: translateY(0) scale(1) rotate(0deg); opacity: 1; }
+  60%  { opacity: 1; }
+  100% { transform: translateY(-200px) scale(0.4) rotate(30deg); opacity: 0; }
+}
+
 @layer base {
   * {
     border-color: var(--color-border);

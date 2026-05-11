@@ -1,5 +1,5 @@
 import { analyzeHandwriting, type HandwritingFeedback } from '@/lib/gemini'
-import { invalidPlaySessionResponse, readPlaySession } from '@/lib/play-session'
+import { invalidPlaySessionResponse, readPlaySession, validatePlayTabVersion } from '@/lib/play-session'
 import { getHostedSessionInvalidMessage, isHostedSessionValid } from '@/lib/session-host'
 import { MAX_LETTER_ATTEMPTS, cleanStudentName, getTargetLetter } from '@/lib/student-writing'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -87,6 +87,9 @@ export async function POST(request: NextRequest) {
   }
   if (group.play_session_version !== playSession.sessionVersion) {
     return invalidPlaySessionResponse('That group has been logged out. Join again to continue.', 403)
+  }
+  if (!validatePlayTabVersion(request, group.play_session_version)) {
+    return invalidPlaySessionResponse('This tab is no longer active. Re-enter the group code to continue.', 403)
   }
 
   if (!group.current_student_id) {

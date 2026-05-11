@@ -32,6 +32,7 @@ export default function JoinPage() {
       const res = await fetch(`/api/play/join?code=${code}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Failed to join')
+      sessionStorage.setItem(`play_tab:${data.groupId}`, String(data.tabVersion))
       router.push(`/play/${data.groupId}`)
     } catch (e) {
       toast.error((e as Error).message)

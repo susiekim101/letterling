@@ -71,6 +71,9 @@ export default function PlayPage({
   const { groupId } = use(params)
   const router = useRouter()
 
+  const tabVersionRef = useRef<string | null>(null)
+  const [tabReady, setTabReady] = useState(false)
+
   const [state, setState] = useState<GroupState | null>(null)
   const [stage, setStage] = useState<'pick' | 'write' | 'fullname' | 'pass' | 'complete'>('pick')
   const [myStudentId, setMyStudentId] = useState<string | null>(null)
@@ -82,6 +85,7 @@ export default function PlayPage({
     attemptsRemaining: number
     blockedReason?: 'attempt_limit'
   } | null>(null)
+  const [successCount, setSuccessCount] = useState(0)
   const [speechState, setSpeechState] = useState<'idle' | 'loading' | 'playing'>('idle')
   const [submitting, setSubmitting] = useState(false)
   const [tool, setTool] = useState<'draw' | 'eraser'>('draw')
@@ -99,6 +103,27 @@ export default function PlayPage({
     },
     [router]
   )
+
+  useEffect(() => {
+    const stored = sessionStorage.getItem(`play_tab:${groupId}`)
+    if (!stored) {
+      redirectToJoin('Re-enter the group code to continue.')
+      return
+    }
+    tabVersionRef.current = stored
+    setTabReady(true)
+  }, [groupId, redirectToJoin])
+
+  const playFetch = useCallback((url: string, init?: RequestInit): Promise<Response> => {
+    const base = init?.headers ? init.headers as Record<string, string> : {}
+    return fetch(url, {
+      ...init,
+      headers: {
+        ...base,
+        ...(tabVersionRef.current ? { 'X-Play-Tab': tabVersionRef.current } : {}),
+      },
+    })
+  }, [])
 
   const readResponse = useCallback(
     async <T,>(res: Response): Promise<T> => {
@@ -119,19 +144,20 @@ export default function PlayPage({
   )
 
   const fetchState = useCallback(async (): Promise<GroupState> => {
-    const res = await fetch(`/api/play/${groupId}`)
+    const res = await playFetch(`/api/play/${groupId}`)
     const data = await readResponse<GroupState>(res)
     setState(data)
     return data
-  }, [groupId, readResponse])
+  }, [groupId, playFetch, readResponse])
 
   useEffect(() => {
+    if (!tabReady) return
     fetchState().catch(console.error)
     if (stage === 'write' || stage === 'fullname' || stage === 'complete') return
 
     const interval = setInterval(() => fetchState().catch(console.error), 4000)
     return () => clearInterval(interval)
-  }, [fetchState, stage])
+  }, [fetchState, stage, tabReady])
 
   useEffect(() => {
     if (!state) return
@@ -144,7 +170,9 @@ export default function PlayPage({
 
   const clearCanvas = useCallback(() => {
     whiteboard.current?.clear()
+    whiteboard.current?.renderAnnotations([])
     setFeedback(null)
+    setSuccessCount(0)
   }, [])
 
   const stopAudioPlayback = useCallback(() => {
@@ -219,7 +247,7 @@ export default function PlayPage({
 
       const request = (async () => {
         try {
-          const res = await fetch('/api/tts', {
+          const res = await playFetch('/api/tts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ text, groupId }),
@@ -358,7 +386,7 @@ export default function PlayPage({
         playSpeech={playSpeech}
         onReady={async () => {
           try {
-            const res = await fetch(`/api/play/${groupId}`, {
+            const res = await playFetch(`/api/play/${groupId}`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -401,7 +429,7 @@ export default function PlayPage({
             toast.error('This student has already finished')
             return
           }
-          const res = await fetch(`/api/play/${groupId}`, {
+          const res = await playFetch(`/api/play/${groupId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ studentId: student.id }),
@@ -440,7 +468,7 @@ export default function PlayPage({
     setSubmitting(true)
     setFeedback(null)
     try {
-      const res = await fetch('/api/play/grade', {
+      const res = await playFetch('/api/play/grade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(boardExport),
@@ -457,12 +485,14 @@ export default function PlayPage({
       }
 
       if (data?.feedbackText) {
+        const success = Boolean(data.isSuccessful)
         setFeedback({
           text: data.feedbackText,
-          success: Boolean(data.isSuccessful),
+          success,
           attemptsRemaining: data.attemptsRemaining ?? 0,
           blockedReason: data.blockedReason,
         })
+        if (success) setSuccessCount((c) => c + 1)
         void playSpeech(data.feedbackText)
         whiteboard.current?.renderAnnotations((data.annotations ?? []) as StrokeAnnotation[])
       }
@@ -477,7 +507,7 @@ export default function PlayPage({
 
   const handleNextLetter = async () => {
     const nextChar = myProg.next_char + 1
-    const res = await fetch(`/api/play/${groupId}/progress`, {
+    const res = await playFetch(`/api/play/${groupId}/progress`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ studentId: myStudentId, next_char: nextChar }),
@@ -520,7 +550,7 @@ export default function PlayPage({
     if (submitting) return
     setSubmitting(true)
     try {
-      const res = await fetch(`/api/play/${groupId}/progress`, {
+      const res = await playFetch(`/api/play/${groupId}/progress`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ studentId: myStudentId, goal_word: null }),
@@ -550,6 +580,7 @@ export default function PlayPage({
 
   return (
     <main className="flex h-dvh flex-col bg-gradient-to-b from-background to-secondary/30">
+      <SuccessBurst count={successCount} />
       <header className="flex items-center justify-between gap-3 px-6 py-4">
         <div>
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Writing</p>
@@ -748,6 +779,31 @@ function PassScreen({
         </Button>
       </div>
     </main>
+  )
+}
+
+const BURST_EMOJIS = ['⭐', '🌟', '✨', '🎉', '🎊', '💫', '🏆', '👏']
+
+function SuccessBurst({ count }: { count: number }) {
+  if (count === 0) return null
+  return (
+    <div key={count} className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
+      {Array.from({ length: 28 }).map((_, i) => (
+        <span
+          key={i}
+          className="absolute select-none"
+          style={{
+            left: `${3 + (i % 14) * 7}%`,
+            bottom: `${15 + (i % 5) * 8}%`,
+            fontSize: `${1.1 + (i % 4) * 0.35}rem`,
+            animation: `burst-float ${0.65 + (i % 5) * 0.18}s ease-out forwards`,
+            animationDelay: `${(i % 7) * 0.055}s`,
+          }}
+        >
+          {BURST_EMOJIS[i % BURST_EMOJIS.length]}
+        </span>
+      ))}
+    </div>
   )
 }
 

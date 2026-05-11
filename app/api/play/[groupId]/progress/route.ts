@@ -1,4 +1,4 @@
-import { invalidPlaySessionResponse, requirePlaySession } from '@/lib/play-session'
+import { invalidPlaySessionResponse, requirePlaySession, validatePlayTabVersion } from '@/lib/play-session'
 import { getHostedSessionInvalidMessage, isHostedSessionValid } from '@/lib/session-host'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { NextRequest } from 'next/server'
@@ -51,6 +51,9 @@ export async function PUT(request: NextRequest, { params }: Params) {
   }
   if (group.play_session_version !== playSession.session.sessionVersion) {
     return invalidPlaySessionResponse('That group has been logged out. Join again to continue.', 403)
+  }
+  if (!validatePlayTabVersion(request, group.play_session_version)) {
+    return invalidPlaySessionResponse('This tab is no longer active. Re-enter the group code to continue.', 403)
   }
   if (group.current_student_id !== studentId) {
     return Response.json({ error: 'Only the active student can update progress.' }, { status: 403 })

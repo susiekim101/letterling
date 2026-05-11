@@ -135,6 +135,13 @@ export function invalidPlaySessionResponse(message: string, status = 401) {
   return clearPlaySessionCookie(response)
 }
 
+export function validatePlayTabVersion(request: NextRequest, dbVersion: number): boolean {
+  const header = request.headers.get('x-play-tab')
+  if (!header) return false
+  const n = parseInt(header, 10)
+  return !isNaN(n) && n === dbVersion
+}
+
 export function requirePlaySession(
   request: NextRequest,
   expectedGroupId: string
