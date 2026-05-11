@@ -1,7 +1,7 @@
 'use client'
 
 import { forwardRef, memo, useEffect, useImperativeHandle, useRef } from 'react'
-import { createShapeId, Editor, Tldraw } from 'tldraw'
+import { createShapeId, Editor, TLShapeId, Tldraw } from 'tldraw'
 import 'tldraw/tldraw.css'
 import type { StrokeAnnotation } from '@/lib/gemini'
 
@@ -55,7 +55,7 @@ export const PracticeWhiteboard = memo(
     ref
   ) {
     const editorRef = useRef<Editor | null>(null)
-    const annotationIdsRef = useRef<Set<string>>(new Set())
+    const annotationIdsRef = useRef<Set<TLShapeId>>(new Set())
     const lastExportRef = useRef<{
       worldOriginX: number
       worldOriginY: number
@@ -73,7 +73,7 @@ export const PracticeWhiteboard = memo(
         clear() {
           const editor = editorRef.current
           if (!editor) return
-          const shapeIds = Array.from(editor.getCurrentPageShapeIds() as Set<string>).filter(
+          const shapeIds = Array.from(editor.getCurrentPageShapeIds()).filter(
             (id) => !annotationIdsRef.current.has(id)
           )
           if (shapeIds.length > 0) editor.deleteShapes(shapeIds)
@@ -83,8 +83,9 @@ export const PracticeWhiteboard = memo(
           const editor = editorRef.current
           if (!editor) return null
 
-          const allShapeIds = Array.from(editor.getCurrentPageShapeIds() as Set<string>)
-          const shapeIds = allShapeIds.filter((id) => !annotationIdsRef.current.has(id))
+          const shapeIds = Array.from(editor.getCurrentPageShapeIds()).filter(
+            (id) => !annotationIdsRef.current.has(id)
+          )
           if (shapeIds.length === 0) return null
 
           let minX = Infinity
@@ -123,7 +124,7 @@ export const PracticeWhiteboard = memo(
           const editor = editorRef.current
           if (!editor) return
 
-          const prev = [...annotationIdsRef.current]
+          const prev = Array.from(annotationIdsRef.current)
           if (prev.length) editor.deleteShapes(prev)
           annotationIdsRef.current = new Set()
 
@@ -135,7 +136,7 @@ export const PracticeWhiteboard = memo(
           const imgW = exportInfo?.width ?? 1000
           const imgH = exportInfo?.height ?? 1000
 
-          const newIds: string[] = []
+          const newIds: TLShapeId[] = []
           for (let i = 0; i < annotations.length; i++) {
             const ann = annotations[i]
             const color = ANNOTATION_COLORS[i % ANNOTATION_COLORS.length]
@@ -159,7 +160,7 @@ export const PracticeWhiteboard = memo(
                 },
               },
             ])
-            newIds.push(circleId as string)
+            newIds.push(circleId)
           }
           annotationIdsRef.current = new Set(newIds)
         },
