@@ -22,7 +22,12 @@ export async function POST(_request: NextRequest) {
 
   const { data: session, error } = await supabase
     .from('sessions')
-    .insert({ teacher_id: user.id, status: 'active', started_at: new Date().toISOString() })
+    .insert({
+      teacher_id: user.id,
+      status: 'active',
+      started_at: new Date().toISOString(),
+      host_last_seen_at: new Date().toISOString(),
+    })
     .select()
     .single()
 

@@ -14,6 +14,13 @@ export async function GET(
   } = await supabase.auth.getUser()
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
+  await supabase
+    .from('sessions')
+    .update({ host_last_seen_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('teacher_id', user.id)
+    .eq('status', 'active')
+
   const snapshot = await loadSessionSnapshot(supabase, id)
   if (!snapshot) return Response.json({ error: 'Session not found' }, { status: 404 })
   return Response.json(snapshot)
@@ -34,8 +41,22 @@ export async function PUT(
   const body = await request.json()
   const updates: Record<string, unknown> = {}
 
+  if (body.action === 'release_host') {
+    const { data, error } = await supabase
+      .from('sessions')
+      .update({ host_last_seen_at: null })
+      .eq('id', id)
+      .eq('teacher_id', user.id)
+      .select()
+      .single()
+
+    if (error) return Response.json({ error: error.message }, { status: 500 })
+    return Response.json(data)
+  }
+
   if (body.status) updates.status = body.status
   if (body.status === 'inactive') updates.ended_at = new Date().toISOString()
+  if (body.status === 'inactive') updates.host_last_seen_at = null
 
   if (body.status === 'inactive') {
     const { data: memberships, error: membershipError } = await supabase

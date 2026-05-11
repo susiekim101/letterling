@@ -1,5 +1,6 @@
 import { analyzeHandwriting, type HandwritingFeedback } from '@/lib/gemini'
 import { invalidPlaySessionResponse, readPlaySession } from '@/lib/play-session'
+import { getHostedSessionInvalidMessage, isHostedSessionValid } from '@/lib/session-host'
 import { MAX_LETTER_ATTEMPTS, getTargetLetter } from '@/lib/student-writing'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { NextRequest } from 'next/server'
@@ -61,6 +62,15 @@ export async function POST(request: NextRequest) {
 
   if (group.status !== 'active' || !group.session_id) {
     return invalidPlaySessionResponse('This session is no longer active.', 400)
+  }
+  const { data: session, error: sessionError } = await supabase
+    .from('sessions')
+    .select('id, teacher_id, status, host_last_seen_at')
+    .eq('id', group.session_id)
+    .single()
+
+  if (sessionError || !isHostedSessionValid(session)) {
+    return invalidPlaySessionResponse(getHostedSessionInvalidMessage(), 403)
   }
 
   if (group.session_id !== playSession.sessionId) {

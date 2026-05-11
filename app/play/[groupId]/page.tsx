@@ -9,7 +9,7 @@ import {
   type AttemptBudget,
 } from '@/lib/student-writing'
 import { toast } from 'sonner'
-import { PartyPopper, Trash2, Sparkles, ArrowRight, Pen, Eraser } from 'lucide-react'
+import { PartyPopper, Trash2, Sparkles, ArrowRight, Pen, Eraser, Volume2 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
 type Student = { id: string; first_name: string; last_name: string }
@@ -77,12 +77,14 @@ export default function PlayPage({
     attemptsRemaining: number
     blockedReason?: 'attempt_limit'
   } | null>(null)
+  const [speechState, setSpeechState] = useState<'idle' | 'loading' | 'playing'>('idle')
   const [submitting, setSubmitting] = useState(false)
   const [tool, setTool] = useState<'draw' | 'eraser'>('draw')
   const whiteboard = useRef<PracticeWhiteboardHandle | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioUrlRef = useRef<string | null>(null)
   const speechRequestIdRef = useRef(0)
+  const speechTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const redirectToJoin = useCallback(
     (message: string) => {
@@ -143,6 +145,7 @@ export default function PlayPage({
 
   const stopAudioPlayback = useCallback(() => {
     speechRequestIdRef.current += 1
+    setSpeechState('idle')
 
     if (audioRef.current) {
       audioRef.current.pause()
@@ -155,23 +158,51 @@ export default function PlayPage({
       audioUrlRef.current = null
     }
 
+    if (speechTimeoutRef.current) {
+      clearTimeout(speechTimeoutRef.current)
+      speechTimeoutRef.current = null
+    }
+
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel()
     }
   }, [])
 
-  const playBrowserFallback = useCallback((text: string) => {
+  const playBrowserFallback = useCallback((text: string, requestId: number) => {
     const cleanText = stripEmotionTags(text)
-    if (!cleanText || typeof window === 'undefined' || !('speechSynthesis' in window)) return
+    if (!cleanText || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      if (requestId === speechRequestIdRef.current) {
+        setSpeechState('idle')
+      }
+      return
+    }
 
     try {
       window.speechSynthesis.cancel()
       const utterance = new SpeechSynthesisUtterance(cleanText)
       utterance.rate = 0.95
       utterance.pitch = 1.1
+      utterance.onstart = () => {
+        if (requestId === speechRequestIdRef.current) {
+          setSpeechState('playing')
+        }
+      }
+      utterance.onend = () => {
+        if (requestId === speechRequestIdRef.current) {
+          setSpeechState('idle')
+        }
+      }
+      utterance.onerror = () => {
+        if (requestId === speechRequestIdRef.current) {
+          setSpeechState('idle')
+        }
+      }
       window.speechSynthesis.speak(utterance)
     } catch (error) {
       console.warn('Browser TTS fallback failed', error)
+      if (requestId === speechRequestIdRef.current) {
+        setSpeechState('idle')
+      }
     }
   }, [])
 
@@ -182,6 +213,14 @@ export default function PlayPage({
 
       stopAudioPlayback()
       const requestId = speechRequestIdRef.current
+      let fallbackStarted = false
+      setSpeechState('loading')
+
+      speechTimeoutRef.current = setTimeout(() => {
+        if (requestId !== speechRequestIdRef.current) return
+        fallbackStarted = true
+        playBrowserFallback(cleanText, requestId)
+      }, 650)
 
       try {
         const res = await fetch('/api/tts', {
@@ -191,8 +230,14 @@ export default function PlayPage({
         })
 
         if (!res.ok) {
-          const errorText = await res.text()
-          throw new Error(errorText || 'Failed to synthesize speech')
+          const payload = await res.json().catch(() => null)
+          if (res.status === 401 || res.status === 403) {
+            stopAudioPlayback()
+            redirectToJoin(payload?.error ?? 'Join the session again to continue.')
+            return
+          }
+
+          throw new Error(payload?.error ?? 'Failed to synthesize speech')
         }
 
         const { audioBase64 } = (await res.json()) as { audioBase64?: string }
@@ -203,12 +248,20 @@ export default function PlayPage({
         if (requestId !== speechRequestIdRef.current) {
           return
         }
+        if (fallbackStarted) {
+          return
+        }
+        if (speechTimeoutRef.current) {
+          clearTimeout(speechTimeoutRef.current)
+          speechTimeoutRef.current = null
+        }
 
         const audioUrl = base64ToObjectUrl(audioBase64)
         audioUrlRef.current = audioUrl
 
         const audio = new Audio(audioUrl)
         audioRef.current = audio
+        setSpeechState('playing')
         audio.onended = () => {
           if (audioRef.current === audio) {
             audioRef.current = null
@@ -217,17 +270,29 @@ export default function PlayPage({
             URL.revokeObjectURL(audioUrl)
             audioUrlRef.current = null
           }
+          if (requestId === speechRequestIdRef.current) {
+            setSpeechState('idle')
+          }
+        }
+        audio.onerror = () => {
+          if (requestId === speechRequestIdRef.current) {
+            setSpeechState('idle')
+          }
         }
 
         await audio.play()
       } catch (error) {
         console.warn('Server TTS failed, using browser fallback', error)
-        if (requestId === speechRequestIdRef.current) {
-          playBrowserFallback(cleanText)
+        if (requestId === speechRequestIdRef.current && !fallbackStarted) {
+          if (speechTimeoutRef.current) {
+            clearTimeout(speechTimeoutRef.current)
+            speechTimeoutRef.current = null
+          }
+          playBrowserFallback(cleanText, requestId)
         }
       }
     },
-    [groupId, playBrowserFallback, stopAudioPlayback]
+    [groupId, playBrowserFallback, redirectToJoin, stopAudioPlayback]
   )
 
   useEffect(() => stopAudioPlayback, [stopAudioPlayback])
@@ -440,6 +505,14 @@ export default function PlayPage({
           }`}
         >
           {feedback.text}
+        </div>
+      )}
+      {speechState !== 'idle' && (
+        <div className="mx-4 mt-3 flex items-center justify-center gap-2 rounded-full bg-primary/10 px-4 py-2 text-sm font-semibold text-primary">
+          <Volume2 className={`h-4 w-4 ${speechState === 'loading' ? 'animate-pulse' : ''}`} />
+          {speechState === 'loading'
+            ? 'Getting your helper voice ready...'
+            : 'Listen to your helper voice'}
         </div>
       )}
       {!feedback?.success && outOfAttempts && (

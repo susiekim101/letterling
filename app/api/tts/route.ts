@@ -1,5 +1,6 @@
 import { synthesizeSpeech } from '@/lib/tts'
 import { invalidPlaySessionResponse, requirePlaySession } from '@/lib/play-session'
+import { getHostedSessionInvalidMessage, isHostedSessionValid } from '@/lib/session-host'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { NextRequest } from 'next/server'
 
@@ -29,6 +30,15 @@ export async function POST(request: NextRequest) {
   }
   if (group.status !== 'active' || !group.session_id) {
     return invalidPlaySessionResponse('This session is no longer active.', 400)
+  }
+  const { data: session, error: sessionError } = await supabase
+    .from('sessions')
+    .select('id, teacher_id, status, host_last_seen_at')
+    .eq('id', group.session_id)
+    .single()
+
+  if (sessionError || !isHostedSessionValid(session)) {
+    return invalidPlaySessionResponse(getHostedSessionInvalidMessage(), 403)
   }
   if (group.session_id !== playSession.session.sessionId) {
     return invalidPlaySessionResponse('That session has expired. Join again to continue.', 403)

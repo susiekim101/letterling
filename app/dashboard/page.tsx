@@ -46,6 +46,13 @@ export default function Dashboard() {
 
   const handleSignOut = async () => {
     const supabase = createClient()
+    if (activeSessionId) {
+      await fetch(`/api/sessions/${activeSessionId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'release_host' }),
+      }).catch(() => {})
+    }
     await supabase.auth.signOut()
     router.push('/')
   }
