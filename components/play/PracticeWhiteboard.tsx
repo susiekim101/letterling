@@ -5,6 +5,8 @@ import { createShapeId, Editor, TLShapeId, Tldraw } from 'tldraw'
 import 'tldraw/tldraw.css'
 import type { StrokeAnnotation } from '@/lib/gemini'
 
+const TLDRAW_LICENSE_KEY = process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY?.trim() || undefined
+
 const HIDDEN_UI = {
   ContextMenu: null,
   ActionsMenu: null,
@@ -172,6 +174,7 @@ export const PracticeWhiteboard = memo(
       <div className="relative mx-4 min-h-0 flex-1 overflow-hidden rounded-3xl bg-card shadow-lg ring-1 ring-border">
         <Tldraw
           components={HIDDEN_UI}
+          licenseKey={TLDRAW_LICENSE_KEY}
           onMount={(editor) => {
             editorRef.current = editor
             editor.setCurrentTool(tool)

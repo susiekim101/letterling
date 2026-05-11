@@ -52,6 +52,10 @@ export async function POST(request: NextRequest) {
     return Response.json({ audioBase64 })
   } catch (error) {
     console.error('TTS error:', error)
-    return Response.json({ error: 'Failed to synthesize speech' }, { status: 500 })
+    const message =
+      process.env.NODE_ENV === 'development' && error instanceof Error
+        ? error.message
+        : 'Failed to synthesize speech'
+    return Response.json({ error: message }, { status: 500 })
   }
 }

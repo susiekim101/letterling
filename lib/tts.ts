@@ -1,27 +1,28 @@
 import 'server-only'
 
-import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js'
 import { createHash } from 'node:crypto'
 
-const VOICE_ID = 'eppqEXVumQ3CfdndcIBd'
+const DEFAULT_VOICE_ID = 'eppqEXVumQ3CfdndcIBd'
 const PRIMARY_MODEL = 'eleven_flash_v2_5'
 const FALLBACK_MODEL = 'eleven_turbo_v2_5'
 const OUTPUT_FORMAT = 'mp3_22050_32'
 const LATENCY_OPTIMIZATION = 3
+const ELEVENLABS_BASE_URL = 'https://api.elevenlabs.io/v1'
 
 const clipCache = new Map<string, string>()
 const inFlightRequests = new Map<string, Promise<string>>()
 
-let client: ElevenLabsClient | null = null
-
-function getClient() {
+function getApiKey() {
   const apiKey = process.env.ELEVENLABS_API_KEY
   if (!apiKey) {
     throw new Error('Missing ELEVENLABS_API_KEY')
   }
 
-  client ??= new ElevenLabsClient({ apiKey })
-  return client
+  return apiKey
+}
+
+function getVoiceId() {
+  return process.env.ELEVENLABS_VOICE_ID?.trim() || DEFAULT_VOICE_ID
 }
 
 function getCacheKey(text: string) {
@@ -29,7 +30,7 @@ function getCacheKey(text: string) {
     .update(
       JSON.stringify({
         text,
-        voiceId: VOICE_ID,
+        voiceId: getVoiceId(),
         modelId: PRIMARY_MODEL,
         outputFormat: OUTPUT_FORMAT,
       })
@@ -37,44 +38,65 @@ function getCacheKey(text: string) {
     .digest('hex')
 }
 
-async function streamToBase64(audioStream: ReadableStream<Uint8Array>) {
-  const reader = audioStream.getReader()
-  const chunks: Buffer[] = []
+async function readErrorDetails(response: Response) {
+  const contentType = response.headers.get('content-type') ?? ''
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    if (value) chunks.push(Buffer.from(value))
+  if (contentType.includes('application/json')) {
+    const payload = (await response.json().catch(() => null)) as
+      | { detail?: unknown; message?: unknown }
+      | null
+    if (typeof payload?.detail === 'string') return payload.detail
+    if (typeof payload?.message === 'string') return payload.message
+    if (payload?.detail) return JSON.stringify(payload.detail)
   }
 
-  if (chunks.length === 0) {
-    throw new Error('No audio content returned from ElevenLabs')
-  }
-
-  return Buffer.concat(chunks).toString('base64')
+  const text = await response.text().catch(() => '')
+  if (text) return text
+  return `HTTP ${response.status}`
 }
 
-async function synthesizeWithModel(text: string, modelId: string) {
-  const audioStream = await getClient().textToSpeech.convert(VOICE_ID, {
-    modelId,
-    optimizeStreamingLatency: LATENCY_OPTIMIZATION,
-    outputFormat: OUTPUT_FORMAT,
-    text,
-    usePvcAsIvc: true,
+async function synthesizeViaHttp(text: string, modelId: string) {
+  const voiceId = getVoiceId()
+  const apiKey = getApiKey()
+  const url = new URL(`${ELEVENLABS_BASE_URL}/text-to-speech/${voiceId}`)
+  url.searchParams.set('optimize_streaming_latency', String(LATENCY_OPTIMIZATION))
+  url.searchParams.set('output_format', OUTPUT_FORMAT)
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'audio/mpeg',
+      'xi-api-key': apiKey,
+    },
+    body: JSON.stringify({
+      text,
+      model_id: modelId,
+      use_pvc_as_ivc: true,
+    }),
+    cache: 'no-store',
   })
 
-  return streamToBase64(audioStream)
+  if (!response.ok) {
+    const details = await readErrorDetails(response)
+    throw new Error(`ElevenLabs request failed (${response.status}): ${details}`)
+  }
+
+  const audioBuffer = Buffer.from(await response.arrayBuffer())
+  if (audioBuffer.length === 0) throw new Error('No audio content returned from ElevenLabs')
+
+  return audioBuffer.toString('base64')
 }
 
 async function synthesizeWithFallback(text: string) {
   try {
-    return await synthesizeWithModel(text, PRIMARY_MODEL)
+    return await synthesizeViaHttp(text, PRIMARY_MODEL)
   } catch (primaryError) {
     console.warn(
       `ElevenLabs TTS failed for ${PRIMARY_MODEL}, retrying ${FALLBACK_MODEL}`,
       primaryError
     )
-    return synthesizeWithModel(text, FALLBACK_MODEL)
+    return synthesizeViaHttp(text, FALLBACK_MODEL)
   }
 }
 
