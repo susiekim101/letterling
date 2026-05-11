@@ -73,5 +73,20 @@ export async function analyzeHandwriting(
 
   const text = response.text ?? ''
   const parsed = JSON.parse(text) as HandwritingFeedback
+
+  // Validate required shape before trusting the response
+  if (
+    typeof parsed.isSuccessful !== 'boolean' ||
+    typeof parsed.feedbackText !== 'string' ||
+    !Array.isArray(parsed.annotations)
+  ) {
+    throw new Error('Unexpected Gemini response shape')
+  }
+
+  // Enforce contract: successful means no corrections
+  if (parsed.isSuccessful) parsed.annotations = []
+  // Cap to 3 annotations regardless of what Gemini returns
+  parsed.annotations = parsed.annotations.slice(0, 3)
+
   return parsed
 }
