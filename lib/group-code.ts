@@ -1,4 +1,4 @@
-export const GROUP_CODE_DIGITS = 6
+export const GROUP_CODE_DIGITS = 4
 export const GROUP_CODE_LEGACY_DIGITS = 4
 export const GROUP_CODE_MIN = 10 ** (GROUP_CODE_DIGITS - 1)
 export const GROUP_CODE_MAX = 10 ** GROUP_CODE_DIGITS - 1
@@ -8,7 +8,7 @@ export function formatGroupCode(code: number) {
 }
 
 export function isValidGroupCodeInput(code: string) {
-  return new RegExp(`^\\d{${GROUP_CODE_LEGACY_DIGITS},${GROUP_CODE_DIGITS}}$`).test(code)
+  return new RegExp(`^\\d{${GROUP_CODE_DIGITS}}$`).test(code)
 }
 
 export function generateGroupCode(random = Math.random) {

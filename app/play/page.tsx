@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { PenLine, Delete } from 'lucide-react'
 import { toast } from 'sonner'
-import { GROUP_CODE_DIGITS, GROUP_CODE_LEGACY_DIGITS } from '@/lib/group-code'
+import { GROUP_CODE_DIGITS } from '@/lib/group-code'
 
 export default function JoinPage() {
   const [code, setCode] = useState('')
@@ -26,7 +26,7 @@ export default function JoinPage() {
   const back = () => setCode(code.slice(0, -1))
 
   const submit = async () => {
-    if (code.length < GROUP_CODE_LEGACY_DIGITS || code.length > GROUP_CODE_DIGITS) return
+    if (code.length !== GROUP_CODE_DIGITS) return
     setLoading(true)
     try {
       const res = await fetch(`/api/play/join?code=${code}`)
@@ -63,7 +63,7 @@ export default function JoinPage() {
             }}
             inputMode="numeric"
             pattern="[0-9]*"
-            placeholder="Enter classroom code"
+            placeholder="Enter 4-digit code"
             className="h-14 rounded-2xl text-center text-2xl font-bold tracking-[0.6em]"
           />
         </div>
@@ -108,7 +108,7 @@ export default function JoinPage() {
 
         <Button
           size="lg"
-          disabled={code.length < GROUP_CODE_LEGACY_DIGITS || loading}
+          disabled={code.length !== GROUP_CODE_DIGITS || loading}
           onClick={submit}
           className="mt-8 h-16 w-full rounded-full bg-emerald-500 text-xl text-white hover:bg-emerald-600 disabled:bg-emerald-500/50"
         >
