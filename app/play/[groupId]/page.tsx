@@ -57,6 +57,17 @@ function stripEmotionTags(text: string) {
   return text.replace(/\[.*?\]/g, '').trim()
 }
 
+function base64ToObjectUrl(base64: string) {
+  const binary = window.atob(base64)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+
+  return URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
+}
+
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -101,6 +112,7 @@ export default function PlayPage({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const editor = useRef<any>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audioUrlRef = useRef<string | null>(null)
   const speechRequestIdRef = useRef(0)
 
   const fetchState = useCallback(async (): Promise<GroupState> => {
@@ -117,6 +129,11 @@ export default function PlayPage({
       audio.pause()
       audio.currentTime = 0
       audioRef.current = null
+    }
+
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = null
     }
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -154,7 +171,8 @@ export default function PlayPage({
       })
 
       if (!res.ok) {
-        throw new Error(`TTS request failed with status ${res.status}`)
+        const errorText = await res.text()
+        throw new Error(`TTS request failed with status ${res.status}: ${errorText}`)
       }
 
       const { audioBase64 } = (await res.json()) as { audioBase64?: string }
@@ -162,7 +180,9 @@ export default function PlayPage({
         return
       }
 
-      const audio = new Audio(`data:audio/mpeg;base64,${audioBase64}`)
+      const audioUrl = base64ToObjectUrl(audioBase64)
+      audioUrlRef.current = audioUrl
+      const audio = new Audio(audioUrl)
       audioRef.current = audio
       await audio.play()
     } catch (error) {
