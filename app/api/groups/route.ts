@@ -1,4 +1,6 @@
+import { cleanupUnhostedTeacherSessions, isHostedSessionValid } from '@/lib/session-host'
 import { loadSessionSnapshot } from '@/lib/session-data'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest } from 'next/server'
 
@@ -44,6 +46,9 @@ export async function POST(request: NextRequest) {
     error: authError,
   } = await supabase.auth.getUser()
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const admin = createAdminClient()
+  await cleanupUnhostedTeacherSessions(admin, user.id)
 
   const body = await request.json()
   const { letters_per_turn, session_id, student_ids } = body as {
@@ -106,11 +111,40 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: membershipError.message }, { status: 500 })
   }
 
-  if ((activeMemberships ?? []).length > 0) {
+  const membershipSessionIds = Array.from(
+    new Set((activeMemberships ?? []).map((membership) => membership.session_id).filter(Boolean))
+  )
+  const { data: membershipSessions, error: membershipSessionsError } = membershipSessionIds.length
+    ? await supabase
+        .from('sessions')
+        .select('id, teacher_id, status, host_last_seen_at')
+        .in('id', membershipSessionIds)
+    : { data: [], error: null }
+
+  if (membershipSessionsError) {
+    return Response.json({ error: membershipSessionsError.message }, { status: 500 })
+  }
+
+  const validMembershipSessionIds = new Set(
+    ((membershipSessions ?? []) as Array<{
+      id: string
+      teacher_id: string
+      status: string
+      host_last_seen_at: string | null
+    }>)
+      .filter((session) => isHostedSessionValid(session))
+      .map((session) => session.id)
+  )
+
+  const blockingMemberships = (activeMemberships ?? []).filter((membership) =>
+    validMembershipSessionIds.has(membership.session_id)
+  )
+
+  if (blockingMemberships.length > 0) {
     return Response.json(
       {
         error: 'Some selected students are already assigned to an active group.',
-        takenStudentIds: activeMemberships.map((membership) => membership.student_id),
+        takenStudentIds: blockingMemberships.map((membership) => membership.student_id),
       },
       { status: 409 }
     )

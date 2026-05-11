@@ -1,3 +1,5 @@
+import { cleanupUnhostedTeacherSessions, isHostedSessionValid } from '@/lib/session-host'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest } from 'next/server'
 
@@ -8,6 +10,9 @@ export async function GET(request: NextRequest) {
     error: authError,
   } = await supabase.auth.getUser()
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const admin = createAdminClient()
+  await cleanupUnhostedTeacherSessions(admin, user.id)
 
   const groupId = request.nextUrl.searchParams.get('group_id')
   let query = supabase.from('students').select('*').order('first_name')
@@ -27,8 +32,33 @@ export async function GET(request: NextRequest) {
 
   if (membershipError) return Response.json({ error: membershipError.message }, { status: 500 })
 
+  const sessionIds = Array.from(
+    new Set((memberships ?? []).map((membership) => membership.session_id).filter(Boolean))
+  )
+  const { data: sessions, error: sessionError } = sessionIds.length
+    ? await supabase
+        .from('sessions')
+        .select('id, teacher_id, status, host_last_seen_at')
+        .in('id', sessionIds)
+    : { data: [], error: null }
+
+  if (sessionError) return Response.json({ error: sessionError.message }, { status: 500 })
+
+  const validSessionIds = new Set(
+    ((sessions ?? []) as Array<{
+      id: string
+      teacher_id: string
+      status: string
+      host_last_seen_at: string | null
+    }>)
+      .filter((session) => isHostedSessionValid(session))
+      .map((session) => session.id)
+  )
+
   const assignmentMap = new Map(
-    (memberships ?? []).map((membership) => [membership.student_id, membership])
+    (memberships ?? [])
+      .filter((membership) => validSessionIds.has(membership.session_id))
+      .map((membership) => [membership.student_id, membership])
   )
 
   return Response.json(

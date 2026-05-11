@@ -23,18 +23,19 @@ export default function Dashboard() {
   // Resume active session if one exists
   useEffect(() => {
     if (!user) return
-    const supabase = createClient()
 
     const loadActiveSession = async () => {
       try {
-        const { data } = await supabase
-          .from('sessions')
-          .select('id')
-          .eq('teacher_id', user.id)
-          .eq('status', 'active')
-          .maybeSingle()
+        const res = await fetch('/api/sessions')
+        const sessions = await res.json().catch(() => null)
+        if (!res.ok || !Array.isArray(sessions)) return
 
-        if (data?.id) setActiveSessionId(data.id)
+        const activeSession = sessions.find(
+          (session: { teacher_id?: string; status?: string; id?: string }) =>
+            session.teacher_id === user.id && session.status === 'active'
+        )
+
+        setActiveSessionId(activeSession?.id ?? null)
       } catch {}
       finally {
         setSessionChecked(true)

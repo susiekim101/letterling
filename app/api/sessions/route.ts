@@ -1,3 +1,5 @@
+import { cleanupUnhostedTeacherSessions } from '@/lib/session-host'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest } from 'next/server'
 
@@ -5,6 +7,9 @@ export async function GET(_request: NextRequest) {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const admin = createAdminClient()
+  await cleanupUnhostedTeacherSessions(admin, user.id)
 
   const { data, error } = await supabase
     .from('sessions')
