@@ -1,14 +1,42 @@
+import {
+  cleanupInvalidActiveMemberships,
+  cleanupUnhostedTeacherSessions,
+  isHostedSessionValid,
+} from '@/lib/session-host'
+import { loadSessionSnapshot } from '@/lib/session-data'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest } from 'next/server'
 
+async function generateUniqueGroupCode(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any
+) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const code = Math.floor(1000 + Math.random() * 9000)
+    const { data: existing } = await supabase
+      .from('groups')
+      .select('id')
+      .eq('group_code', code)
+      .maybeSingle()
+
+    if (!existing) return code
+  }
+
+  throw new Error('Could not generate a unique group code')
+}
+
 export async function GET(_request: NextRequest) {
   const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser()
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { data, error } = await supabase
     .from('groups')
-    .select('*, students(*)')
+    .select('*')
     .order('created_at', { ascending: false })
 
   if (error) return Response.json({ error: error.message }, { status: 500 })
@@ -17,32 +45,212 @@ export async function GET(_request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser()
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const body = await request.json()
-  const { letters_per_turn, num_students, session_id } = body
+  const admin = createAdminClient()
+  await cleanupUnhostedTeacherSessions(admin, user.id)
 
-  if (!letters_per_turn || !num_students) {
-    return Response.json({ error: 'letters_per_turn and num_students are required' }, { status: 400 })
+  const body = await request.json()
+  const { letters_per_turn, session_id, student_ids } = body as {
+    letters_per_turn?: number
+    session_id?: string
+    student_ids?: string[]
   }
 
-  // Generate a unique 4-digit group code
-  const group_code = Math.floor(1000 + Math.random() * 9000)
+  const selectedIds = Array.from(new Set(student_ids ?? []))
 
-  const { data, error } = await supabase
+  if (!letters_per_turn || selectedIds.length === 0) {
+    return Response.json(
+      { error: 'letters_per_turn and at least one student_id are required' },
+      { status: 400 }
+    )
+  }
+
+  if (selectedIds.length > 5) {
+    return Response.json({ error: 'Max 5 students per group' }, { status: 400 })
+  }
+
+  if (!session_id) {
+    return Response.json({ error: 'session_id is required' }, { status: 400 })
+  }
+
+  await cleanupInvalidActiveMemberships(admin, user.id, selectedIds)
+
+  const { data: session, error: sessionError } = await supabase
+    .from('sessions')
+    .select('id, status')
+    .eq('id', session_id)
+    .single()
+
+  if (sessionError || !session) {
+    return Response.json({ error: 'Session not found' }, { status: 404 })
+  }
+
+  if (session.status !== 'active') {
+    return Response.json({ error: 'Session is not active' }, { status: 409 })
+  }
+
+  const { data: students, error: studentsError } = await supabase
+    .from('students')
+    .select('id, first_name')
+    .in('id', selectedIds)
+
+  if (studentsError) {
+    return Response.json({ error: studentsError.message }, { status: 500 })
+  }
+
+  if ((students ?? []).length !== selectedIds.length) {
+    return Response.json({ error: 'One or more students were not found' }, { status: 404 })
+  }
+
+  const { data: activeMemberships, error: membershipError } = await supabase
+    .from('group_memberships')
+    .select('student_id, group_id, session_id')
+    .in('student_id', selectedIds)
+    .eq('status', 'active')
+
+  if (membershipError) {
+    return Response.json({ error: membershipError.message }, { status: 500 })
+  }
+
+  const membershipSessionIds = Array.from(
+    new Set((activeMemberships ?? []).map((membership) => membership.session_id).filter(Boolean))
+  )
+  const { data: membershipSessions, error: membershipSessionsError } = membershipSessionIds.length
+    ? await supabase
+        .from('sessions')
+        .select('id, teacher_id, status, host_last_seen_at')
+        .in('id', membershipSessionIds)
+    : { data: [], error: null }
+
+  if (membershipSessionsError) {
+    return Response.json({ error: membershipSessionsError.message }, { status: 500 })
+  }
+
+  const validMembershipSessionIds = new Set(
+    ((membershipSessions ?? []) as Array<{
+      id: string
+      teacher_id: string
+      status: string
+      host_last_seen_at: string | null
+    }>)
+      .filter((session) => isHostedSessionValid(session))
+      .map((session) => session.id)
+  )
+
+  const blockingMemberships = (activeMemberships ?? []).filter((membership) =>
+    validMembershipSessionIds.has(membership.session_id)
+  )
+
+  if (blockingMemberships.length > 0) {
+    return Response.json(
+      {
+        error: 'Some selected students are already assigned to an active group.',
+        takenStudentIds: blockingMemberships.map((membership) => membership.student_id),
+      },
+      { status: 409 }
+    )
+  }
+
+  const group_code = await generateUniqueGroupCode(supabase)
+
+  const { data: group, error: groupError } = await supabase
     .from('groups')
     .insert({
       letters_per_turn,
-      num_students,
+      num_students: selectedIds.length,
       group_code,
       teacher_id: user.id,
-      session_id: session_id ?? null,
-      status: session_id ? 'active' : 'inactive',
+      session_id,
+      status: 'active',
     })
     .select()
     .single()
 
-  if (error) return Response.json({ error: error.message }, { status: 500 })
-  return Response.json(data, { status: 201 })
+  if (groupError || !group) {
+    return Response.json({ error: groupError?.message ?? 'Failed to create group' }, { status: 500 })
+  }
+
+  const memberships = selectedIds.map((studentId, index) => ({
+    group_id: group.id,
+    session_id,
+    student_id: studentId,
+    teacher_id: user.id,
+    turn_order: index + 1,
+    status: 'active',
+  }))
+
+  const { error: insertMembershipError } = await supabase
+    .from('group_memberships')
+    .insert(memberships)
+
+  if (insertMembershipError) {
+    await supabase.from('groups').delete().eq('id', group.id)
+
+    const conflictStudents = await supabase
+      .from('group_memberships')
+      .select('student_id')
+      .in('student_id', selectedIds)
+      .eq('status', 'active')
+
+    const takenStudentIds = (conflictStudents.data ?? []).map((membership) => membership.student_id)
+    const status = insertMembershipError.code === '23505' ? 409 : 500
+
+    return Response.json(
+      {
+        error:
+          status === 409
+            ? 'Some selected students are still assigned to another group. Refresh and try again.'
+            : insertMembershipError.message,
+        takenStudentIds,
+      },
+      { status }
+    )
+  }
+
+  for (const student of students ?? []) {
+    const { data: progress } = await supabase
+      .from('student_progress')
+      .select('student_id, finished_last_char')
+      .eq('student_id', student.id)
+      .maybeSingle()
+
+    if (!progress) {
+      const { error: insertProgressError } = await supabase.from('student_progress').insert({
+        student_id: student.id,
+        teacher_id: user.id,
+        next_char: 0,
+        goal_word: student.first_name,
+        finished_last_char: false,
+      })
+
+      if (insertProgressError) {
+        return Response.json({ error: insertProgressError.message }, { status: 500 })
+      }
+
+      continue
+    }
+
+    if (progress.finished_last_char) {
+      const { error: resetProgressError } = await supabase
+        .from('student_progress')
+        .update({
+          next_char: 0,
+          goal_word: student.first_name,
+          finished_last_char: false,
+        })
+        .eq('student_id', student.id)
+
+      if (resetProgressError) {
+        return Response.json({ error: resetProgressError.message }, { status: 500 })
+      }
+    }
+  }
+
+  const snapshot = await loadSessionSnapshot(supabase, session_id)
+  return Response.json({ group, session: snapshot }, { status: 201 })
 }

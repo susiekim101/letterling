@@ -25,9 +25,6 @@ export default function Landing() {
           <span className="font-display text-xl font-bold">Letterling</span>
         </div>
         <div className="flex gap-2">
-          <Button asChild className="rounded-full bg-emerald-500 text-white hover:bg-emerald-600">
-            <Link href="/play">Join session</Link>
-          </Button>
           <Button variant="ghost" asChild>
             <Link href="/login">Log in</Link>
           </Button>
@@ -55,6 +52,15 @@ export default function Landing() {
           </Button>
           <Button asChild size="lg" variant="outline" className="rounded-full px-8">
             <Link href="/login">I already have one</Link>
+          </Button>
+        </div>
+        <div className="mt-6 flex justify-center">
+          <Button
+            asChild
+            size="lg"
+            className="h-16 rounded-full bg-emerald-500 px-12 text-xl text-white hover:bg-emerald-600"
+          >
+            <Link href="/play">Join students</Link>
           </Button>
         </div>
 

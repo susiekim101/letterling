@@ -22,7 +22,10 @@ export type Student = {
   first_name: string
   last_name: string
   parent_email: string | null
-  group_id: string | null
+  active_assignment?: {
+    group_id: string
+    session_id: string
+  } | null
 }
 
 export function StudentList({ teacherId }: { teacherId: string }) {
@@ -80,6 +83,11 @@ export function StudentList({ teacherId }: { teacherId: string }) {
                   {s.first_name}{' '}
                   <span className="text-muted-foreground">{s.last_name}</span>
                 </p>
+                {s.active_assignment && (
+                  <p className="mt-0.5 text-xs font-medium text-amber-700">
+                    In an active group right now
+                  </p>
+                )}
                 {showEmails && s.parent_email && (
                   <p className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
                     <Mail className="h-3 w-3" />

@@ -1,43 +1,23 @@
 'use client'
 
 import { use, useCallback, useEffect, useRef, useState } from 'react'
+import { PracticeWhiteboard, type PracticeWhiteboardHandle } from '@/components/play/PracticeWhiteboard'
 import { Button } from '@/components/ui/button'
-import { toast } from 'sonner'
-import { PartyPopper, Trash2, Sparkles, ArrowRight, Pen, Eraser } from 'lucide-react'
-import { Tldraw, createShapeId } from 'tldraw'
-import 'tldraw/tldraw.css'
+import {
+  MAX_LETTER_ATTEMPTS,
+  cleanStudentName,
+  type AttemptBudget,
+} from '@/lib/student-writing'
 import type { StrokeAnnotation } from '@/lib/gemini'
-
-// Avoid SSR — tldraw uses browser APIs
-// const Tldraw = dynamic(() => import('tldraw').then((m) => m.Tldraw), { ssr: false })
-
-// Defined outside component so it's stable (required by tldraw)
-const HIDDEN_UI = {
-  ContextMenu: null,
-  ActionsMenu: null,
-  HelpMenu: null,
-  ZoomMenu: null,
-  MainMenu: null,
-  Minimap: null,
-  StylePanel: null,
-  PageMenu: null,
-  NavigationPanel: null,
-  Toolbar: null,
-  KeyboardShortcutsDialog: null,
-  QuickActions: null,
-  HelperButtons: null,
-  DebugPanel: null,
-  DebugMenu: null,
-  MenuPanel: null,
-  TopPanel: null,
-  SharePanel: null,
-} as const
+import { toast } from 'sonner'
+import { PartyPopper, Trash2, Sparkles, ArrowRight, Pen, Eraser, Volume2 } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 
 type Student = { id: string; first_name: string; last_name: string }
 type Progress = {
   student_id: string
   next_char: number
-  goal_word: string | null  // null = full name has been written
+  goal_word: string | null
   finished_last_char: boolean
 }
 type GroupState = {
@@ -50,32 +30,25 @@ type GroupState = {
   }
   students: Student[]
   progress: Progress[]
+  attemptBudget: AttemptBudget | null
 }
 
-const cleanName = (s: string) => s.replace(/[^a-zA-Z]/g, '')
-const CIRCLE_RADIUS = 40
-
-function speak(text: string) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
-  try {
-    window.speechSynthesis.cancel()
-    const u = new SpeechSynthesisUtterance(text)
-    u.rate = 0.95
-    u.pitch = 1.1
-    window.speechSynthesis.speak(u)
-  } catch {}
+function stripEmotionTags(text: string) {
+  return text.replace(/\[.*?\]/g, '').trim()
 }
 
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = reader.result as string
-      resolve(dataUrl.split(',')[1])
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
-  })
+const SESSION_EXPIRED_ERROR = 'session-expired'
+const HELPER_VOICE_PLAYBACK_RATE = 0.9
+
+function base64ToObjectUrl(base64: string) {
+  const binary = window.atob(base64)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+
+  return URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
 }
 
 function pickNextStudent(state: GroupState, currentId: string): Student | null {
@@ -84,7 +57,6 @@ function pickNextStudent(state: GroupState, currentId: string): Student | null {
   for (let i = 1; i <= students.length; i++) {
     const cand = students[(idx + i) % students.length]
     const p = progress.find((x) => x.student_id === cand.id)
-    // Student still has work if they haven't finished letters OR haven't written their full name
     if (p && (!p.finished_last_char || p.goal_word !== null)) return cand
   }
   return null
@@ -96,6 +68,7 @@ export default function PlayPage({
   params: Promise<{ groupId: string }>
 }) {
   const { groupId } = use(params)
+  const router = useRouter()
 
   const [state, setState] = useState<GroupState | null>(null)
   const [stage, setStage] = useState<'pick' | 'write' | 'fullname' | 'pass' | 'complete'>('pick')
@@ -105,84 +78,265 @@ export default function PlayPage({
   const [feedback, setFeedback] = useState<{
     text: string
     success: boolean
+    attemptsRemaining: number
+    blockedReason?: 'attempt_limit'
   } | null>(null)
+  const [speechState, setSpeechState] = useState<'idle' | 'loading' | 'playing'>('idle')
   const [submitting, setSubmitting] = useState(false)
   const [tool, setTool] = useState<'draw' | 'eraser'>('draw')
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const editor = useRef<any>(null)
-  const annotationIds = useRef<Set<string>>(new Set())
+  const whiteboard = useRef<PracticeWhiteboardHandle | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audioUrlRef = useRef<string | null>(null)
+  const speechCacheRef = useRef<Map<string, string>>(new Map())
+  const speechFetchRef = useRef<Map<string, Promise<string>>>(new Map())
+  const speechRequestIdRef = useRef(0)
 
-  const renderAnnotations = useCallback((
-    annotations: StrokeAnnotation[],
-    originX = 0,
-    originY = 0,
-  ) => {
-    const ed = editor.current
-    if (!ed) return
-    const prev = [...annotationIds.current]
-    if (prev.length) ed.deleteShapes(prev)
-    annotationIds.current = new Set()
-    if (!annotations?.length) return
-    const COLORS = ['red', 'blue', 'green'] as const
-    const newIds: string[] = []
-    for (let i = 0; i < annotations.length; i++) {
-      const ann = annotations[i]
-      const color = COLORS[i % COLORS.length]
-      const [cx, cy] = ann.center
-      const circleId = createShapeId()
-      ed.createShapes([
-        {
-          id: circleId,
-          type: 'geo',
-          x: originX + cx - CIRCLE_RADIUS,
-          y: originY + cy - CIRCLE_RADIUS,
-          props: {
-            geo: 'ellipse',
-            w: CIRCLE_RADIUS * 2,
-            h: CIRCLE_RADIUS * 2,
-            color,
-            fill: 'none',
-            size: 'm',
-            dash: 'solid',
-          },
-        },
-      ])
-      newIds.push(circleId as string)
-    }
-    annotationIds.current = new Set(newIds)
-  }, [])
+  const redirectToJoin = useCallback(
+    (message: string) => {
+      toast.error(message)
+      router.replace('/play')
+    },
+    [router]
+  )
+
+  const readResponse = useCallback(
+    async <T,>(res: Response): Promise<T> => {
+      const payload = await res.json().catch(() => null)
+
+      if (res.status === 401 || res.status === 403) {
+        redirectToJoin(payload?.error ?? 'Join the session again to continue.')
+        throw new Error(payload?.error ?? 'Session expired')
+      }
+
+      if (!res.ok) {
+        throw new Error(payload?.error ?? 'Request failed')
+      }
+
+      return payload as T
+    },
+    [redirectToJoin]
+  )
 
   const fetchState = useCallback(async (): Promise<GroupState> => {
     const res = await fetch(`/api/play/${groupId}`)
-    if (!res.ok) throw new Error('Failed to load group')
-    const data: GroupState = await res.json()
+    const data = await readResponse<GroupState>(res)
     setState(data)
     return data
-  }, [groupId])
+  }, [groupId, readResponse])
 
-  // Polling — setState called inside async callback, not synchronously in effect body
   useEffect(() => {
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/play/${groupId}`)
-        if (res.ok) setState(await res.json())
-      } catch {}
-    }
-    poll()
-    const id = setInterval(poll, 4000)
-    return () => clearInterval(id)
-  }, [groupId])
+    fetchState().catch(console.error)
+    if (stage === 'write' || stage === 'fullname' || stage === 'complete') return
+
+    const interval = setInterval(() => fetchState().catch(console.error), 4000)
+    return () => clearInterval(interval)
+  }, [fetchState, stage])
+
+  useEffect(() => {
+    if (!state) return
+    const allDone =
+      state.students.length > 0 &&
+      state.progress.length > 0 &&
+      state.progress.every((p) => p.finished_last_char && p.goal_word === null)
+    if (allDone) setStage('complete')
+  }, [state])
 
   const clearCanvas = useCallback(() => {
-    const ed = editor.current
-    if (!ed) return
-    // Only delete user-drawn shapes — leave annotation arrows intact
-    const ids = [...ed.getCurrentPageShapeIds()].filter(
-      (id) => !annotationIds.current.has(id)
-    )
-    if (ids.length) ed.deleteShapes(ids)
+    whiteboard.current?.clear()
     setFeedback(null)
   }, [])
+
+  const stopAudioPlayback = useCallback(() => {
+    speechRequestIdRef.current += 1
+    setSpeechState('idle')
+
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+      audioRef.current = null
+    }
+
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = null
+    }
+
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
+  }, [])
+
+  const playBrowserFallback = useCallback((text: string, requestId: number) => {
+    const cleanText = stripEmotionTags(text)
+    if (!cleanText || typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      if (requestId === speechRequestIdRef.current) {
+        setSpeechState('idle')
+      }
+      return
+    }
+
+    try {
+      window.speechSynthesis.cancel()
+      const utterance = new SpeechSynthesisUtterance(cleanText)
+      utterance.rate = HELPER_VOICE_PLAYBACK_RATE
+      utterance.pitch = 1.1
+      utterance.onstart = () => {
+        if (requestId === speechRequestIdRef.current) {
+          setSpeechState('playing')
+        }
+      }
+      utterance.onend = () => {
+        if (requestId === speechRequestIdRef.current) {
+          setSpeechState('idle')
+        }
+      }
+      utterance.onerror = () => {
+        if (requestId === speechRequestIdRef.current) {
+          setSpeechState('idle')
+        }
+      }
+      window.speechSynthesis.speak(utterance)
+    } catch (error) {
+      console.warn('Browser TTS fallback failed', error)
+      if (requestId === speechRequestIdRef.current) {
+        setSpeechState('idle')
+      }
+    }
+  }, [])
+
+  const fetchSpeechAudio = useCallback(
+    async (text: string) => {
+      const cached = speechCacheRef.current.get(text)
+      if (cached) {
+        return cached
+      }
+
+      const inFlight = speechFetchRef.current.get(text)
+      if (inFlight) {
+        return inFlight
+      }
+
+      const request = (async () => {
+        try {
+          const res = await fetch('/api/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, groupId }),
+          })
+
+          if (!res.ok) {
+            const payload = await res.json().catch(() => null)
+            if (res.status === 401 || res.status === 403) {
+              redirectToJoin(payload?.error ?? 'Join the session again to continue.')
+              throw new Error(SESSION_EXPIRED_ERROR)
+            }
+
+            throw new Error(payload?.error ?? 'Failed to synthesize speech')
+          }
+
+          const { audioBase64 } = (await res.json()) as { audioBase64?: string }
+          if (!audioBase64) {
+            throw new Error('Missing synthesized audio')
+          }
+
+          speechCacheRef.current.set(text, audioBase64)
+          return audioBase64
+        } finally {
+          speechFetchRef.current.delete(text)
+        }
+      })()
+
+      speechFetchRef.current.set(text, request)
+      return request
+    },
+    [groupId, redirectToJoin]
+  )
+
+  const prefetchSpeech = useCallback(
+    async (text: string) => {
+      const cleanText = stripEmotionTags(text)
+      if (!cleanText || typeof window === 'undefined') return
+
+      try {
+        await fetchSpeechAudio(cleanText)
+      } catch (error) {
+        console.warn('Unable to prefetch ElevenLabs audio', error)
+      }
+    },
+    [fetchSpeechAudio]
+  )
+
+  const playSpeech = useCallback(
+    async (text: string) => {
+      const cleanText = stripEmotionTags(text)
+      if (!cleanText || typeof window === 'undefined') return
+
+      stopAudioPlayback()
+      const requestId = speechRequestIdRef.current
+      setSpeechState('loading')
+
+      try {
+        const audioBase64 = await fetchSpeechAudio(cleanText)
+
+        if (requestId !== speechRequestIdRef.current) {
+          return
+        }
+
+        const audioUrl = base64ToObjectUrl(audioBase64)
+        audioUrlRef.current = audioUrl
+
+        const audio = new Audio(audioUrl)
+        audioRef.current = audio
+        audio.playbackRate = HELPER_VOICE_PLAYBACK_RATE
+        setSpeechState('playing')
+        audio.onended = () => {
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          if (audioUrlRef.current === audioUrl) {
+            URL.revokeObjectURL(audioUrl)
+            audioUrlRef.current = null
+          }
+          if (requestId === speechRequestIdRef.current) {
+            setSpeechState('idle')
+          }
+        }
+        audio.onerror = () => {
+          if (requestId === speechRequestIdRef.current) {
+            setSpeechState('idle')
+          }
+        }
+
+        await audio.play()
+      } catch (error) {
+        if ((error as Error).message === SESSION_EXPIRED_ERROR) {
+          if (requestId === speechRequestIdRef.current) {
+            setSpeechState('idle')
+          }
+          return
+        }
+
+        console.warn('ElevenLabs playback failed, using browser fallback', error)
+        if (requestId === speechRequestIdRef.current) {
+          playBrowserFallback(cleanText, requestId)
+        }
+      }
+    },
+    [fetchSpeechAudio, playBrowserFallback, stopAudioPlayback]
+  )
+
+  useEffect(() => stopAudioPlayback, [stopAudioPlayback])
+
+  useEffect(() => {
+    if (!state || typeof window === 'undefined') return
+
+    for (const student of state.students) {
+      void prefetchSpeech(`${student.first_name}'s turn!`)
+      void prefetchSpeech(`${student.first_name}, your turn!`)
+    }
+    void prefetchSpeech('All done! Great job everyone!')
+    void prefetchSpeech('Amazing! Now write your whole name!')
+  }, [prefetchSpeech, state])
 
   if (!state) {
     return (
@@ -192,32 +346,38 @@ export default function PlayPage({
     )
   }
 
-  const allDone =
-    state.students.length > 0 &&
-    state.progress.length > 0 &&
-    state.progress.every((p) => p.finished_last_char && p.goal_word === null)
-
-  if (stage === 'complete' || allDone) return <CompleteScreen students={state.students} />
+  if (stage === 'complete') {
+    return <CompleteScreen students={state.students} playSpeech={playSpeech} />
+  }
 
   if (stage === 'pass' && pendingNext) {
     return (
       <PassScreen
         next={pendingNext}
+        playSpeech={playSpeech}
         onReady={async () => {
-          await fetch(`/api/play/${groupId}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ studentId: pendingNext.id }),
-          })
-          setMyStudentId(pendingNext.id)
-          const s = await fetchState()
-          const p = s.progress.find((x) => x.student_id === pendingNext.id)
-          setLetterStartIdx(p?.next_char ?? 0)
-          setPendingNext(null)
-          setFeedback(null)
-          // Route to full name stage if letters are done but full name isn't yet
-          setStage(p?.finished_last_char && p.goal_word !== null ? 'fullname' : 'write')
-          clearCanvas()
+          try {
+            const res = await fetch(`/api/play/${groupId}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                studentId: pendingNext.id,
+                previousStudentId: myStudentId,
+              }),
+            })
+            await readResponse<{ ok: true }>(res)
+            setMyStudentId(pendingNext.id)
+            const s = await fetchState()
+            const p = s.progress.find((x) => x.student_id === pendingNext.id)
+            setLetterStartIdx(p?.next_char ?? 0)
+            setPendingNext(null)
+            setFeedback(null)
+            whiteboard.current?.renderAnnotations([])
+            setStage(p?.finished_last_char && p.goal_word !== null ? 'fullname' : 'write')
+            clearCanvas()
+          } catch (error) {
+            toast.error((error as Error).message)
+          }
         }}
       />
     )
@@ -236,87 +396,77 @@ export default function PlayPage({
             return
           }
           const prog = state.progress.find((p) => p.student_id === student.id)
-          if (prog?.finished_last_char) {
+          if (prog?.finished_last_char && prog.goal_word === null) {
             toast.error('This student has already finished')
             return
           }
-          await fetch(`/api/play/${groupId}`, {
+          const res = await fetch(`/api/play/${groupId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ studentId: student.id }),
           })
+          await readResponse<{ ok: true }>(res)
           setMyStudentId(student.id)
           const s = await fetchState()
           const p = s.progress.find((x) => x.student_id === student.id)
           setLetterStartIdx(p?.next_char ?? 0)
-          setStage('write')
+          setStage(p?.finished_last_char && p.goal_word !== null ? 'fullname' : 'write')
+          void playSpeech(`${student.first_name}'s turn!`)
         }}
       />
     )
   }
 
-  const me = state.students.find((s) => s.id === myStudentId)
-  const myProg = state.progress.find((p) => p.student_id === myStudentId)
-  if (!me || !myProg) return null
-  const nameLetters = cleanName(me.first_name)
+  const me = state.students.find((s) => s.id === myStudentId)!
+  const myProg = state.progress.find((p) => p.student_id === myStudentId)!
+  const nameLetters = cleanStudentName(me.first_name)
   const letter = nameLetters[myProg.next_char] ?? ''
   const displayLetter = myProg.next_char === 0 ? letter.toUpperCase() : letter.toLowerCase()
+  const myAttemptBudget =
+    state.attemptBudget?.student_id === myStudentId ? state.attemptBudget : null
+  const attemptsRemaining = myAttemptBudget?.remaining ?? MAX_LETTER_ATTEMPTS
+  const attemptLimit = myAttemptBudget?.limit ?? MAX_LETTER_ATTEMPTS
+  const outOfAttempts = stage === 'write' && attemptsRemaining <= 0
+  const nextStudent = pickNextStudent(state, myStudentId)
 
   const handleCheck = async () => {
-    const ed = editor.current
-    if (!ed) return
-    // Exclude annotation arrows — only capture the student's strokes
-    const shapeIds = Array.from(ed.getCurrentPageShapeIds() as Set<string>).filter(
-      (id) => !annotationIds.current.has(id)
-    )
-    if (shapeIds.length === 0) {
+    const boardExport = await whiteboard.current?.exportImage()
+    if (!boardExport) {
       toast.error('Draw the letter first!')
       return
     }
+
     setSubmitting(true)
     setFeedback(null)
     try {
-      const result = await ed.toImage(shapeIds, {
-        format: 'png',
-        background: true,
-        scale: 1,
-        padding: 32,
-      })
-      // Compute world-space origin of the captured image for annotation alignment
-      let minX = Infinity, minY = Infinity
-      for (const id of shapeIds) {
-        const bounds = ed.getShapePageBounds(id)
-        if (bounds) {
-          if (bounds.minX < minX) minX = bounds.minX
-          if (bounds.minY < minY) minY = bounds.minY
-        }
-      }
-      const originX = isFinite(minX) ? minX - 32 : 0
-      const originY = isFinite(minY) ? minY - 32 : 0
-
-      console.log('[annotation] image size:', result.width, 'x', result.height)
-      console.log('[annotation] shape bounds minX/minY:', minX, minY)
-      console.log('[annotation] origin:', originX, originY)
-
-      const imageBase64 = await blobToBase64(result.blob)
-      const checkTarget = stage === 'fullname' ? me.first_name : displayLetter
       const res = await fetch('/api/play/grade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64, mimeType: 'image/png', targetLetter: checkTarget }),
+        body: JSON.stringify(boardExport),
       })
-      const data = await res.json()
-      console.log('[annotation] gemini annotations:', JSON.stringify(data.annotations, null, 2))
-      // Gemini returns coords on a 0-1000 normalized scale — convert to image pixels
-      const imgW = result.width
-      const imgH = result.height
-      const scaledAnnotations = (data.annotations ?? []).map((ann: StrokeAnnotation) => ({
-        ...ann,
-        center: [(ann.center[0] / 1000) * imgW, (ann.center[1] / 1000) * imgH] as [number, number],
-      }))
-      setFeedback({ text: data.feedbackText, success: data.isSuccessful })
-      speak(data.feedbackText)
-      renderAnnotations(scaledAnnotations, originX, originY)
+      const data = await res.json().catch(() => null)
+
+      if (res.status === 401 || res.status === 403) {
+        redirectToJoin(data?.error ?? 'Join the session again to continue.')
+        return
+      }
+
+      if (!res.ok && !data?.feedbackText) {
+        throw new Error(data?.error ?? 'Failed to check letter')
+      }
+
+      if (data?.feedbackText) {
+        setFeedback({
+          text: data.feedbackText,
+          success: Boolean(data.isSuccessful),
+          attemptsRemaining: data.attemptsRemaining ?? 0,
+          blockedReason: data.blockedReason,
+        })
+        void playSpeech(data.feedbackText)
+        whiteboard.current?.renderAnnotations((data.annotations ?? []) as StrokeAnnotation[])
+      }
+
+      await fetchState()
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -325,38 +475,40 @@ export default function PlayPage({
   }
 
   const handleNextLetter = async () => {
-    if (submitting) return
-    setSubmitting(true)
-    try {
-      const nextChar = myProg.next_char + 1
-      await fetch(`/api/play/${groupId}/progress`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ studentId: myStudentId, next_char: nextChar }),
-      })
-      renderAnnotations([])
-      clearCanvas()
-      const s = await fetchState()
-      const myNew = s.progress.find((p) => p.student_id === myStudentId)
+    const nextChar = myProg.next_char + 1
+    const res = await fetch(`/api/play/${groupId}/progress`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentId: myStudentId, next_char: nextChar }),
+    })
+    await readResponse<{ ok: true }>(res)
+    whiteboard.current?.renderAnnotations([])
+    clearCanvas()
+    const s = await fetchState()
+    const myNew = s.progress.find((p) => p.student_id === myStudentId)!
 
-      if (myNew?.finished_last_char) {
-        setFeedback(null)
+    if (myNew.finished_last_char) {
+      setFeedback(null)
+      if (myNew.goal_word !== null) {
         setStage('fullname')
-        speak('Amazing! Now write your whole name!')
+        void playSpeech('Amazing! Now write your whole name!')
         return
       }
+    }
 
-      const lettersThisTurn = (myNew?.next_char ?? nextChar) - letterStartIdx
-      if (lettersThisTurn >= s.group.letters_per_turn) {
-        const nextS = pickNextStudent(s, myStudentId!)
-        if (nextS) {
-          setPendingNext(nextS)
-          setStage('pass')
-          speak(`${nextS.first_name}, your turn!`)
-        }
+    if (s.progress.every((p) => p.finished_last_char && p.goal_word === null)) {
+      setStage('complete')
+      return
+    }
+
+    const lettersThisTurn = myNew.next_char - letterStartIdx
+    if (lettersThisTurn >= s.group.letters_per_turn) {
+      const nextS = pickNextStudent(s, myStudentId!)
+      if (nextS) {
+        setPendingNext(nextS)
+        setStage('pass')
+        void playSpeech(`${nextS.first_name}, your turn!`)
       }
-    } finally {
-      setSubmitting(false)
     }
   }
 
@@ -364,12 +516,13 @@ export default function PlayPage({
     if (submitting) return
     setSubmitting(true)
     try {
-      await fetch(`/api/play/${groupId}/progress`, {
+      const res = await fetch(`/api/play/${groupId}/progress`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ studentId: myStudentId, goal_word: null }),
       })
-      renderAnnotations([])
+      await readResponse<{ ok: true }>(res)
+      whiteboard.current?.renderAnnotations([])
       clearCanvas()
       const s = await fetchState()
       if (s.progress.every((p) => p.finished_last_char && p.goal_word === null)) {
@@ -380,36 +533,14 @@ export default function PlayPage({
       if (nextS) {
         setPendingNext(nextS)
         setStage('pass')
-        speak(`${nextS.first_name}, your turn!`)
+        void playSpeech(`${nextS.first_name}, your turn!`)
       } else {
         setStage('complete')
       }
+    } catch (error) {
+      toast.error((error as Error).message)
     } finally {
       setSubmitting(false)
-    }
-  }
-
-  const handleFullNameDone = async () => {
-    // Mark full name as written by clearing goal_word
-    await fetch(`/api/play/${groupId}/progress`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ studentId: myStudentId, goal_word: null }),
-    })
-    renderAnnotations([])
-    clearCanvas()
-    const s = await fetchState()
-    if (s.progress.every((p) => p.finished_last_char && p.goal_word === null)) {
-      setStage('complete')
-      return
-    }
-    const nextS = pickNextStudent(s, myStudentId!)
-    if (nextS) {
-      setPendingNext(nextS)
-      setStage('pass')
-      speak(`${nextS.first_name}, your turn!`)
-    } else {
-      setStage('complete')
     }
   }
 
@@ -419,6 +550,9 @@ export default function PlayPage({
         <div>
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Writing</p>
           <h2 className="font-display text-xl font-bold">{me.first_name}</h2>
+          <p className="mt-1 text-xs font-medium text-muted-foreground">
+            {nextStudent ? `Next: ${nextStudent.first_name}` : 'Last turn in the group'}
+          </p>
         </div>
         {stage === 'fullname' ? (
           <div className="flex flex-col items-center">
@@ -436,64 +570,76 @@ export default function PlayPage({
           </div>
         )}
         <div className="text-right">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Progress</p>
-          <p className="font-display text-xl font-bold">
-            {stage === 'fullname' ? '🌟' : `${myProg.next_char + 1} / ${nameLetters.length}`}
+          <p className="text-xs uppercase tracking-wider text-muted-foreground">Turn</p>
+          <p className="font-medium">
+            {state.group.current_student_id === myStudentId ? 'Now writing' : 'Waiting'}
           </p>
+          {stage !== 'fullname' && (
+            <>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">Progress</p>
+              <p className="font-display text-xl font-bold">
+                {myProg.next_char + 1} / {nameLetters.length}
+              </p>
+              <p className="mt-1 text-xs font-medium text-muted-foreground">
+                {attemptsRemaining} of {attemptLimit} tries left
+              </p>
+            </>
+          )}
         </div>
       </header>
 
-      <div className="mx-4 mb-2 flex items-center justify-center gap-3">
-        <Button
-          variant={tool === 'draw' ? 'default' : 'outline'}
-          size="lg"
-          onClick={() => { setTool('draw'); editor.current?.setCurrentTool('draw') }}
-          className="h-14 w-24 rounded-full"
-        >
-          <Pen className="h-6 w-6" />
-        </Button>
-        <Button
-          variant={tool === 'eraser' ? 'default' : 'outline'}
-          size="lg"
-          onClick={() => { setTool('eraser'); editor.current?.setCurrentTool('eraser') }}
-          className="h-14 w-24 rounded-full"
-        >
-          <Eraser className="h-6 w-6" />
-        </Button>
-        <Button
-          variant="outline"
-          size="lg"
-          onClick={clearCanvas}
-          className="h-14 w-24 rounded-full"
-        >
-          <Trash2 className="h-6 w-6" />
-        </Button>
-      </div>
-
-      <div className="relative mx-4 min-h-0 flex-1 overflow-hidden rounded-3xl bg-card shadow-lg ring-1 ring-border">
-        <Tldraw
-          components={HIDDEN_UI}
-          onMount={(ed) => {
-            editor.current = ed
-            ed.setCurrentTool('draw')
-            ed.updateInstanceState({ isDebugMode: false })
-          }}
-        />
-      </div>
+      <PracticeWhiteboard ref={whiteboard} tool={tool} />
 
       {feedback && (
         <div
           className={`mx-4 mt-3 rounded-2xl p-4 text-center text-base font-medium ${
             feedback.success
-              ? 'bg-success/15 text-foreground ring-1 ring-success/40'
+              ? 'bg-success/15 text-success-foreground ring-1 ring-success/40'
               : 'bg-accent text-accent-foreground'
           }`}
         >
           {feedback.text}
         </div>
       )}
+      {speechState !== 'idle' && (
+        <div className="mx-4 mt-3 flex items-center justify-center gap-2 rounded-full bg-primary/10 px-4 py-2 text-sm font-semibold text-primary">
+          <Volume2 className={`h-4 w-4 ${speechState === 'loading' ? 'animate-pulse' : ''}`} />
+          {speechState === 'loading'
+            ? 'Getting your helper voice ready...'
+            : 'Listen to your helper voice'}
+        </div>
+      )}
+      {stage === 'write' && !feedback?.success && outOfAttempts && (
+        <div className="mx-4 mt-3 rounded-2xl bg-amber-100 px-4 py-3 text-center text-sm font-medium text-amber-900 ring-1 ring-amber-300">
+          No more tries left for this letter right now. Ask your teacher before moving on.
+        </div>
+      )}
 
       <div className="flex items-center gap-3 p-4">
+        <Button
+          variant={tool === 'draw' ? 'default' : 'outline'}
+          size="lg"
+          onClick={() => setTool('draw')}
+          className="h-16 gap-2 rounded-full px-5 text-base"
+        >
+          <Pen className="h-5 w-5" />
+        </Button>
+        <Button
+          variant={tool === 'eraser' ? 'default' : 'outline'}
+          size="lg"
+          onClick={() => setTool('eraser')}
+          className="h-16 gap-2 rounded-full px-5 text-base"
+        >
+          <Eraser className="h-5 w-5" />
+        </Button>
+        <Button
+          variant="outline"
+          size="lg"
+          onClick={clearCanvas}
+          className="h-16 gap-2 rounded-full px-6 text-base"
+        >
+          <Trash2 className="h-5 w-5" />
+        </Button>
         {feedback?.success ? (
           <Button
             size="lg"
@@ -508,11 +654,17 @@ export default function PlayPage({
           <Button
             size="lg"
             onClick={handleCheck}
-            disabled={submitting}
+            disabled={submitting || outOfAttempts}
             className="h-16 flex-1 gap-2 rounded-full text-xl"
           >
             <Sparkles className="h-6 w-6" />
-            {submitting ? 'Checking…' : stage === 'fullname' ? 'Check my name' : 'Check my letter'}
+            {submitting
+              ? 'Checking…'
+              : outOfAttempts
+                ? 'No more tries left'
+                : stage === 'fullname'
+                  ? 'Check my name'
+                  : 'Check my letter'}
           </Button>
         )}
       </div>
@@ -533,13 +685,15 @@ function PickName({
         <h1 className="mt-2 text-center font-display text-4xl font-bold">Tap your name</h1>
         {state.group.current_student_id && (
           <p className="mt-3 text-center text-sm text-muted-foreground">
-            Someone is writing — pick your name to wait your turn.
+            {state.students.find((student) => student.id === state.group.current_student_id)?.first_name ??
+              'Someone'}{' '}
+            is writing right now. Pick your name to wait your turn.
           </p>
         )}
         <div className="mt-8 grid gap-3">
           {state.students.map((s) => {
             const prog = state.progress.find((p) => p.student_id === s.id)
-            const done = prog?.finished_last_char ?? false
+            const done = prog?.finished_last_char && prog.goal_word === null
             return (
               <button
                 key={s.id}
@@ -561,10 +715,18 @@ function PickName({
   )
 }
 
-function PassScreen({ next, onReady }: { next: Student; onReady: () => void }) {
+function PassScreen({
+  next,
+  onReady,
+  playSpeech,
+}: {
+  next: Student
+  onReady: () => void
+  playSpeech: (text: string) => Promise<void>
+}) {
   useEffect(() => {
-    speak(`${next.first_name}, your turn!`)
-  }, [next.first_name])
+    void playSpeech(`${next.first_name}, your turn!`)
+  }, [next.first_name, playSpeech])
 
   return (
     <main className="grid min-h-screen place-items-center bg-gradient-to-b from-accent/40 to-background px-6">
@@ -585,14 +747,35 @@ function PassScreen({ next, onReady }: { next: Student; onReady: () => void }) {
   )
 }
 
-function CompleteScreen({ students }: { students: Student[] }) {
+function CompleteScreen({
+  students,
+  playSpeech,
+}: {
+  students: Student[]
+  playSpeech: (text: string) => Promise<void>
+}) {
   useEffect(() => {
-    speak('All done! Great job everyone!')
-  }, [])
+    void playSpeech('All done! Great job everyone!')
+  }, [playSpeech])
 
   return (
-    <main className="grid min-h-screen place-items-center bg-gradient-to-b from-background to-accent/40 px-6">
-      <div className="text-center">
+    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-gradient-to-b from-background to-accent/40 px-6">
+      <div className="pointer-events-none absolute inset-0">
+        {Array.from({ length: 18 }).map((_, index) => (
+          <div
+            key={index}
+            className="absolute text-amber-400 opacity-80"
+            style={{
+              left: `${8 + (index % 6) * 15}%`,
+              top: `${10 + Math.floor(index / 6) * 24}%`,
+              transform: `scale(${0.8 + (index % 3) * 0.25}) rotate(${index * 14}deg)`,
+            }}
+          >
+            <Sparkles className="h-8 w-8" />
+          </div>
+        ))}
+      </div>
+      <div className="relative text-center">
         <PartyPopper className="mx-auto h-20 w-20 text-primary" />
         <h1 className="mt-4 font-display text-5xl font-bold">All done!</h1>
         <p className="mt-3 text-lg text-muted-foreground">
