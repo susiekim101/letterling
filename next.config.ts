@@ -1,7 +1,8 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  /* config options here */
-};
+  transpilePackages: ['tldraw'],
+  serverExternalPackages: ['@google-cloud/text-to-speech'],
+}
 
-export default nextConfig;
+export default nextConfig

@@ -27,8 +27,8 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: 'letters_per_turn and num_students are required' }, { status: 400 })
   }
 
-  // Generate a unique 6-digit group code
-  const group_code = Math.floor(100000 + Math.random() * 900000)
+  // Generate a unique 4-digit group code
+  const group_code = Math.floor(1000 + Math.random() * 9000)
 
   const { data, error } = await supabase
     .from('groups')
