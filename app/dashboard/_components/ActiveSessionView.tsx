@@ -46,7 +46,6 @@ export function ActiveSessionView({
   onEnded: () => void
 }) {
   const [session, setSession] = useState<Session | null>(null)
-  const [failed, setFailed] = useState(false)
 
   const refresh = async () => {
     try {
@@ -56,11 +55,16 @@ export function ActiveSessionView({
         .select(`*, groups(*, students(*, student_progress(*)))`)
         .eq('id', sessionId)
         .single()
-      if (error || !data) { setFailed(true); return }
+      if (error || !data) {
+        // Stale/broken session — clean it up and return to dashboard
+        await supabase.from('sessions').update({ status: 'inactive' }).eq('id', sessionId)
+        onEnded()
+        return
+      }
       setSession(data as Session)
       setFailed(false)
     } catch {
-      setFailed(true)
+      onEnded()
     }
   }
 
@@ -80,21 +84,6 @@ export function ActiveSessionView({
     } catch {
       toast.error('Failed to end session')
     }
-  }
-
-  if (failed) {
-    return (
-      <div className="rounded-2xl bg-muted p-6 text-center text-sm text-muted-foreground">
-        Could not load session.{' '}
-        <button onClick={() => { setFailed(false); refresh() }} className="font-semibold underline">
-          Retry
-        </button>
-        {' '}or{' '}
-        <button onClick={onEnded} className="font-semibold underline">
-          go back
-        </button>
-      </div>
-    )
   }
 
   if (!session) {
