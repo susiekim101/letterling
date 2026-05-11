@@ -22,6 +22,13 @@ export async function PUT(request: NextRequest, { params }: Params) {
       return Response.json({ error: 'Invalid goal_word' }, { status: 400 })
     }
   }
+  if (next_char === undefined && goal_word === undefined) {
+    return Response.json({ error: 'next_char or goal_word is required' }, { status: 400 })
+  }
+
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if (next_char !== undefined) updates.next_char = next_char
+  if (goal_word !== undefined) updates.goal_word = goal_word  // null clears it (full name written)
 
   const supabase = createAdminClient()
 

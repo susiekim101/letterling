@@ -294,6 +294,10 @@ export default function PlayPage({
       const originX = isFinite(minX) ? minX - 32 : 0
       const originY = isFinite(minY) ? minY - 32 : 0
 
+      console.log('[annotation] image size:', result.width, 'x', result.height)
+      console.log('[annotation] shape bounds minX/minY:', minX, minY)
+      console.log('[annotation] origin:', originX, originY)
+
       const imageBase64 = await blobToBase64(result.blob)
       const checkTarget = stage === 'fullname' ? me.first_name : displayLetter
       const res = await fetch('/api/play/grade', {
@@ -302,6 +306,7 @@ export default function PlayPage({
         body: JSON.stringify({ imageBase64, mimeType: 'image/png', targetLetter: checkTarget }),
       })
       const data = await res.json()
+      console.log('[annotation] gemini annotations:', JSON.stringify(data.annotations, null, 2))
       // Gemini returns coords on a 0-1000 normalized scale — convert to image pixels
       const imgW = result.width
       const imgH = result.height
@@ -381,6 +386,30 @@ export default function PlayPage({
       }
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleFullNameDone = async () => {
+    // Mark full name as written by clearing goal_word
+    await fetch(`/api/play/${groupId}/progress`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentId: myStudentId, goal_word: null }),
+    })
+    renderAnnotations([])
+    clearCanvas()
+    const s = await fetchState()
+    if (s.progress.every((p) => p.finished_last_char && p.goal_word === null)) {
+      setStage('complete')
+      return
+    }
+    const nextS = pickNextStudent(s, myStudentId!)
+    if (nextS) {
+      setPendingNext(nextS)
+      setStage('pass')
+      speak(`${nextS.first_name}, your turn!`)
+    } else {
+      setStage('complete')
     }
   }
 
