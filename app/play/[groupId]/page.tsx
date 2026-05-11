@@ -36,6 +36,9 @@ function stripEmotionTags(text: string) {
   return text.replace(/\[.*?\]/g, '').trim()
 }
 
+const SESSION_EXPIRED_ERROR = 'session-expired'
+const HELPER_VOICE_PLAYBACK_RATE = 0.9
+
 function base64ToObjectUrl(base64: string) {
   const binary = window.atob(base64)
   const bytes = new Uint8Array(binary.length)
@@ -83,8 +86,9 @@ export default function PlayPage({
   const whiteboard = useRef<PracticeWhiteboardHandle | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioUrlRef = useRef<string | null>(null)
+  const speechCacheRef = useRef<Map<string, string>>(new Map())
+  const speechFetchRef = useRef<Map<string, Promise<string>>>(new Map())
   const speechRequestIdRef = useRef(0)
-  const speechTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const redirectToJoin = useCallback(
     (message: string) => {
@@ -158,11 +162,6 @@ export default function PlayPage({
       audioUrlRef.current = null
     }
 
-    if (speechTimeoutRef.current) {
-      clearTimeout(speechTimeoutRef.current)
-      speechTimeoutRef.current = null
-    }
-
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel()
     }
@@ -180,7 +179,7 @@ export default function PlayPage({
     try {
       window.speechSynthesis.cancel()
       const utterance = new SpeechSynthesisUtterance(cleanText)
-      utterance.rate = 0.95
+      utterance.rate = HELPER_VOICE_PLAYBACK_RATE
       utterance.pitch = 1.1
       utterance.onstart = () => {
         if (requestId === speechRequestIdRef.current) {
@@ -206,6 +205,68 @@ export default function PlayPage({
     }
   }, [])
 
+  const fetchSpeechAudio = useCallback(
+    async (text: string) => {
+      const cached = speechCacheRef.current.get(text)
+      if (cached) {
+        return cached
+      }
+
+      const inFlight = speechFetchRef.current.get(text)
+      if (inFlight) {
+        return inFlight
+      }
+
+      const request = (async () => {
+        try {
+          const res = await fetch('/api/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, groupId }),
+          })
+
+          if (!res.ok) {
+            const payload = await res.json().catch(() => null)
+            if (res.status === 401 || res.status === 403) {
+              redirectToJoin(payload?.error ?? 'Join the session again to continue.')
+              throw new Error(SESSION_EXPIRED_ERROR)
+            }
+
+            throw new Error(payload?.error ?? 'Failed to synthesize speech')
+          }
+
+          const { audioBase64 } = (await res.json()) as { audioBase64?: string }
+          if (!audioBase64) {
+            throw new Error('Missing synthesized audio')
+          }
+
+          speechCacheRef.current.set(text, audioBase64)
+          return audioBase64
+        } finally {
+          speechFetchRef.current.delete(text)
+        }
+      })()
+
+      speechFetchRef.current.set(text, request)
+      return request
+    },
+    [groupId, redirectToJoin]
+  )
+
+  const prefetchSpeech = useCallback(
+    async (text: string) => {
+      const cleanText = stripEmotionTags(text)
+      if (!cleanText || typeof window === 'undefined') return
+
+      try {
+        await fetchSpeechAudio(cleanText)
+      } catch (error) {
+        console.warn('Unable to prefetch ElevenLabs audio', error)
+      }
+    },
+    [fetchSpeechAudio]
+  )
+
   const playSpeech = useCallback(
     async (text: string) => {
       const cleanText = stripEmotionTags(text)
@@ -213,47 +274,13 @@ export default function PlayPage({
 
       stopAudioPlayback()
       const requestId = speechRequestIdRef.current
-      let fallbackStarted = false
       setSpeechState('loading')
 
-      speechTimeoutRef.current = setTimeout(() => {
-        if (requestId !== speechRequestIdRef.current) return
-        fallbackStarted = true
-        playBrowserFallback(cleanText, requestId)
-      }, 650)
-
       try {
-        const res = await fetch('/api/tts', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: cleanText, groupId }),
-        })
-
-        if (!res.ok) {
-          const payload = await res.json().catch(() => null)
-          if (res.status === 401 || res.status === 403) {
-            stopAudioPlayback()
-            redirectToJoin(payload?.error ?? 'Join the session again to continue.')
-            return
-          }
-
-          throw new Error(payload?.error ?? 'Failed to synthesize speech')
-        }
-
-        const { audioBase64 } = (await res.json()) as { audioBase64?: string }
-        if (!audioBase64) {
-          throw new Error('Missing synthesized audio')
-        }
+        const audioBase64 = await fetchSpeechAudio(cleanText)
 
         if (requestId !== speechRequestIdRef.current) {
           return
-        }
-        if (fallbackStarted) {
-          return
-        }
-        if (speechTimeoutRef.current) {
-          clearTimeout(speechTimeoutRef.current)
-          speechTimeoutRef.current = null
         }
 
         const audioUrl = base64ToObjectUrl(audioBase64)
@@ -261,6 +288,7 @@ export default function PlayPage({
 
         const audio = new Audio(audioUrl)
         audioRef.current = audio
+        audio.playbackRate = HELPER_VOICE_PLAYBACK_RATE
         setSpeechState('playing')
         audio.onended = () => {
           if (audioRef.current === audio) {
@@ -282,20 +310,33 @@ export default function PlayPage({
 
         await audio.play()
       } catch (error) {
-        console.warn('Server TTS failed, using browser fallback', error)
-        if (requestId === speechRequestIdRef.current && !fallbackStarted) {
-          if (speechTimeoutRef.current) {
-            clearTimeout(speechTimeoutRef.current)
-            speechTimeoutRef.current = null
+        if ((error as Error).message === SESSION_EXPIRED_ERROR) {
+          if (requestId === speechRequestIdRef.current) {
+            setSpeechState('idle')
           }
+          return
+        }
+
+        console.warn('ElevenLabs playback failed, using browser fallback', error)
+        if (requestId === speechRequestIdRef.current) {
           playBrowserFallback(cleanText, requestId)
         }
       }
     },
-    [groupId, playBrowserFallback, redirectToJoin, stopAudioPlayback]
+    [fetchSpeechAudio, playBrowserFallback, stopAudioPlayback]
   )
 
   useEffect(() => stopAudioPlayback, [stopAudioPlayback])
+
+  useEffect(() => {
+    if (!state || typeof window === 'undefined') return
+
+    for (const student of state.students) {
+      void prefetchSpeech(`${student.first_name}'s turn!`)
+      void prefetchSpeech(`${student.first_name}, your turn!`)
+    }
+    void prefetchSpeech('All done! Great job everyone!')
+  }, [prefetchSpeech, state])
 
   if (!state) {
     return (
@@ -315,20 +356,27 @@ export default function PlayPage({
         next={pendingNext}
         playSpeech={playSpeech}
         onReady={async () => {
-          const res = await fetch(`/api/play/${groupId}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ studentId: pendingNext.id }),
-          })
-          await readResponse<{ ok: true }>(res)
-          setMyStudentId(pendingNext.id)
-          const s = await fetchState()
-          const p = s.progress.find((x) => x.student_id === pendingNext.id)
-          setLetterStartIdx(p?.next_char ?? 0)
-          setPendingNext(null)
-          setFeedback(null)
-          setStage('write')
-          clearCanvas()
+          try {
+            const res = await fetch(`/api/play/${groupId}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                studentId: pendingNext.id,
+                previousStudentId: myStudentId,
+              }),
+            })
+            await readResponse<{ ok: true }>(res)
+            setMyStudentId(pendingNext.id)
+            const s = await fetchState()
+            const p = s.progress.find((x) => x.student_id === pendingNext.id)
+            setLetterStartIdx(p?.next_char ?? 0)
+            setPendingNext(null)
+            setFeedback(null)
+            setStage('write')
+            clearCanvas()
+          } catch (error) {
+            toast.error((error as Error).message)
+          }
         }}
       />
     )

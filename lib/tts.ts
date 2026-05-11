@@ -4,9 +4,10 @@ import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js'
 import { createHash } from 'node:crypto'
 
 const VOICE_ID = 'eppqEXVumQ3CfdndcIBd'
-const PRIMARY_MODEL = 'eleven_v3'
-const FALLBACK_MODEL = 'eleven_multilingual_v2'
-const OUTPUT_FORMAT = 'mp3_44100_128'
+const PRIMARY_MODEL = 'eleven_flash_v2_5'
+const FALLBACK_MODEL = 'eleven_turbo_v2_5'
+const OUTPUT_FORMAT = 'mp3_22050_32'
+const LATENCY_OPTIMIZATION = 3
 
 const clipCache = new Map<string, string>()
 const inFlightRequests = new Map<string, Promise<string>>()
@@ -25,7 +26,14 @@ function getClient() {
 
 function getCacheKey(text: string) {
   return createHash('sha256')
-    .update(JSON.stringify({ text, voiceId: VOICE_ID, outputFormat: OUTPUT_FORMAT }))
+    .update(
+      JSON.stringify({
+        text,
+        voiceId: VOICE_ID,
+        modelId: PRIMARY_MODEL,
+        outputFormat: OUTPUT_FORMAT,
+      })
+    )
     .digest('hex')
 }
 
@@ -49,8 +57,10 @@ async function streamToBase64(audioStream: ReadableStream<Uint8Array>) {
 async function synthesizeWithModel(text: string, modelId: string) {
   const audioStream = await getClient().textToSpeech.convert(VOICE_ID, {
     modelId,
+    optimizeStreamingLatency: LATENCY_OPTIMIZATION,
     outputFormat: OUTPUT_FORMAT,
     text,
+    usePvcAsIvc: true,
   })
 
   return streamToBase64(audioStream)

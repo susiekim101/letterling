@@ -159,7 +159,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   if (!playSession.ok) return playSession.response
 
   const body = await request.json()
-  const { studentId } = body
+  const { studentId, previousStudentId } = body
 
   const supabase = createAdminClient()
   const { data: group, error: groupError } = await supabase
@@ -203,7 +203,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       return Response.json({ error: 'Student is not in this group.' }, { status: 403 })
     }
 
-    if (group.current_student_id && group.current_student_id !== studentId) {
+    const isExpectedHandoff =
+      Boolean(previousStudentId) && group.current_student_id === previousStudentId
+
+    if (
+      group.current_student_id &&
+      group.current_student_id !== studentId &&
+      !isExpectedHandoff
+    ) {
       return Response.json({ error: 'Another student is currently writing.' }, { status: 409 })
     }
   }
