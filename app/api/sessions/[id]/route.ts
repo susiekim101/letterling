@@ -12,7 +12,7 @@ export async function GET(
 
   const { data, error } = await supabase
     .from('sessions')
-    .select('*, groups(*)')
+    .select(`*, groups(*, students(*, student_progress(*)))`)
     .eq('id', id)
     .single()
 
@@ -33,8 +33,14 @@ export async function PUT(
   const updates: Record<string, unknown> = {}
 
   if (body.status) updates.status = body.status
-  // Automatically set ended_at when session is closed
   if (body.status === 'inactive') updates.ended_at = new Date().toISOString()
+
+  if (body.status === 'inactive') {
+    await supabase
+      .from('groups')
+      .update({ status: 'inactive', current_student_id: null })
+      .eq('session_id', id)
+  }
 
   const { data, error } = await supabase
     .from('sessions')

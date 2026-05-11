@@ -13,7 +13,7 @@ import { LogOut, PenLine, History } from 'lucide-react'
 export default function Dashboard() {
   const { user, loading } = useAuth()
   const router = useRouter()
-  const [activeGroupId, setActiveGroupId] = useState<string | null>(null)
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [sessionChecked, setSessionChecked] = useState(false)
 
   useEffect(() => {
@@ -24,16 +24,24 @@ export default function Dashboard() {
   useEffect(() => {
     if (!user) return
     const supabase = createClient()
-    supabase
-      .from('groups')
-      .select('id')
-      .eq('teacher_id', user.id)
-      .eq('status', 'active')
-      .maybeSingle()
-      .then(({ data }) => {
-        if (data?.id) setActiveGroupId(data.id)
+
+    const loadActiveSession = async () => {
+      try {
+        const { data } = await supabase
+          .from('sessions')
+          .select('id')
+          .eq('teacher_id', user.id)
+          .eq('status', 'active')
+          .maybeSingle()
+
+        if (data?.id) setActiveSessionId(data.id)
+      } catch {}
+      finally {
         setSessionChecked(true)
-      })
+      }
+    }
+
+    void loadActiveSession()
   }, [user])
 
   const handleSignOut = async () => {
@@ -75,10 +83,10 @@ export default function Dashboard() {
       </header>
 
       <div className="mx-auto max-w-6xl px-6 py-10">
-        {activeGroupId ? (
+        {activeSessionId ? (
           <ActiveSessionView
-            groupId={activeGroupId}
-            onEnded={() => setActiveGroupId(null)}
+            sessionId={activeSessionId}
+            onEnded={() => setActiveSessionId(null)}
           />
         ) : (
           <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
@@ -94,7 +102,7 @@ export default function Dashboard() {
                 </p>
                 <div className="mt-6 space-y-3">
                   <CreateSessionDialog
-                    onSessionStarted={(gid) => setActiveGroupId(gid)}
+                    onSessionStarted={(sid) => setActiveSessionId(sid)}
                   />
                   <Button
                     variant="outline"

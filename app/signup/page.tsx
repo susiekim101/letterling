@@ -12,6 +12,7 @@ import { PenLine } from 'lucide-react'
 
 export default function Signup() {
   const router = useRouter()
+  const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -23,7 +24,7 @@ export default function Signup() {
       const res = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, full_name: fullName }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Failed to create account')
@@ -53,6 +54,18 @@ export default function Signup() {
         <p className="mt-1 text-sm text-muted-foreground">It only takes a minute.</p>
 
         <form onSubmit={onSubmit} className="mt-6 space-y-4" autoComplete="off">
+          <div>
+            <Label htmlFor="full_name">Full name</Label>
+            <Input
+              id="full_name"
+              type="text"
+              required
+              autoComplete="name"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              className="mt-1.5 rounded-xl"
+            />
+          </div>
           <div>
             <Label htmlFor="email">Email</Label>
             <Input

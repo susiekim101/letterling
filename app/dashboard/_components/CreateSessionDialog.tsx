@@ -12,14 +12,20 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Play, Users } from 'lucide-react'
+import { Play, Plus, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Student } from './StudentList'
 
 export function CreateSessionDialog({
   onSessionStarted,
+  sessionId,
+  triggerLabel = 'Create session',
+  triggerIcon = 'play',
 }: {
-  onSessionStarted: (groupId: string) => void
+  onSessionStarted: (sessionId: string) => void
+  sessionId?: string
+  triggerLabel?: string
+  triggerIcon?: 'play' | 'plus'
 }) {
   const [open, setOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -49,13 +55,28 @@ export function CreateSessionDialog({
   const start = useMutation({
     mutationFn: async () => {
       if (selectedIds.length === 0) throw new Error('Select at least one student')
-      if (lettersPerTurn < 1) throw new Error('Letters per turn must be at least 1')
 
-      // 1. Create group
+      // Create session if this is the first group
+      let sid = sessionId
+      if (!sid) {
+        const sessionRes = await fetch('/api/sessions', { method: 'POST' })
+        if (!sessionRes.ok) {
+          const err = await sessionRes.json()
+          throw new Error(err.error ?? 'Failed to create session')
+        }
+        const session = await sessionRes.json()
+        sid = session.id
+      }
+
+      // Create group linked to the session
       const groupRes = await fetch('/api/groups', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ letters_per_turn: lettersPerTurn, num_students: selectedIds.length }),
+        body: JSON.stringify({
+          letters_per_turn: lettersPerTurn,
+          num_students: selectedIds.length,
+          session_id: sid,
+        }),
       })
       if (!groupRes.ok) {
         const err = await groupRes.json()
@@ -63,10 +84,10 @@ export function CreateSessionDialog({
       }
       const group = await groupRes.json()
 
-      // 2. Assign students to this group
+      // Assign students to group
       await Promise.all(
-        selectedIds.map((sid) =>
-          fetch(`/api/students/${sid}`, {
+        selectedIds.map((studentId) =>
+          fetch(`/api/students/${studentId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ group_id: group.id }),
@@ -74,42 +95,35 @@ export function CreateSessionDialog({
         )
       )
 
-      // 3. Seed progress rows for each student
-      await Promise.all(selectedIds.map((sid) => fetch(`/api/student-progress/${sid}`)))
+      // Seed progress rows
+      await Promise.all(selectedIds.map((studentId) => fetch(`/api/student-progress/${studentId}`)))
 
-      // 4. Create session and activate the group
-      const sessionRes = await fetch('/api/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ group_id: group.id }),
-      })
-      if (!sessionRes.ok) {
-        const err = await sessionRes.json()
-        throw new Error(err.error ?? 'Failed to start session')
-      }
-
-      return group.id as string
+      return sid as string
     },
-    onSuccess: (groupId) => {
-      toast.success('Session started!')
+    onSuccess: (sid) => {
+      toast.success(sessionId ? 'Group added!' : 'Session started!')
       setOpen(false)
       setSelectedIds([])
       setLettersPerTurn(1)
-      onSessionStarted(groupId)
+      onSessionStarted(sid)
     },
     onError: (e: Error) => toast.error(e.message),
   })
+
+  const Icon = triggerIcon === 'plus' ? Plus : Play
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button size="lg" className="w-full gap-2 rounded-full">
-          <Play className="h-5 w-5" /> Create session
+          <Icon className="h-5 w-5" /> {triggerLabel}
         </Button>
       </DialogTrigger>
       <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto rounded-3xl">
         <DialogHeader>
-          <DialogTitle className="text-2xl">New session</DialogTitle>
+          <DialogTitle className="text-2xl">
+            {sessionId ? 'Add group to session' : 'New session'}
+          </DialogTitle>
         </DialogHeader>
 
         {students.length === 0 ? (
@@ -164,8 +178,8 @@ export function CreateSessionDialog({
               className="w-full gap-2 rounded-full"
               size="lg"
             >
-              <Play className="h-5 w-5" />
-              {start.isPending ? 'Starting…' : 'Start session'}
+              <Users className="h-5 w-5" />
+              {start.isPending ? 'Starting…' : sessionId ? 'Add group' : 'Start session'}
             </Button>
           </div>
         )}

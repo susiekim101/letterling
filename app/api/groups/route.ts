@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await request.json()
-  const { letters_per_turn, num_students } = body
+  const { letters_per_turn, num_students, session_id } = body
 
   if (!letters_per_turn || !num_students) {
     return Response.json({ error: 'letters_per_turn and num_students are required' }, { status: 400 })
@@ -32,7 +32,14 @@ export async function POST(request: NextRequest) {
 
   const { data, error } = await supabase
     .from('groups')
-    .insert({ letters_per_turn, num_students, group_code, teacher_id: user.id })
+    .insert({
+      letters_per_turn,
+      num_students,
+      group_code,
+      teacher_id: user.id,
+      session_id: session_id ?? null,
+      status: session_id ? 'active' : 'inactive',
+    })
     .select()
     .single()
 
