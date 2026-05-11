@@ -8,6 +8,7 @@ import {
   cleanStudentName,
   type AttemptBudget,
 } from '@/lib/student-writing'
+import type { StrokeAnnotation } from '@/lib/gemini'
 import { toast } from 'sonner'
 import { PartyPopper, Trash2, Sparkles, ArrowRight, Pen, Eraser, Volume2 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
@@ -56,7 +57,7 @@ function pickNextStudent(state: GroupState, currentId: string): Student | null {
   for (let i = 1; i <= students.length; i++) {
     const cand = students[(idx + i) % students.length]
     const p = progress.find((x) => x.student_id === cand.id)
-    if (p && !p.finished_last_char) return cand
+    if (p && (!p.finished_last_char || p.goal_word !== null)) return cand
   }
   return null
 }
@@ -70,7 +71,7 @@ export default function PlayPage({
   const router = useRouter()
 
   const [state, setState] = useState<GroupState | null>(null)
-  const [stage, setStage] = useState<'pick' | 'write' | 'pass' | 'complete'>('pick')
+  const [stage, setStage] = useState<'pick' | 'write' | 'fullname' | 'pass' | 'complete'>('pick')
   const [myStudentId, setMyStudentId] = useState<string | null>(null)
   const [letterStartIdx, setLetterStartIdx] = useState(0)
   const [pendingNext, setPendingNext] = useState<Student | null>(null)
@@ -125,7 +126,7 @@ export default function PlayPage({
 
   useEffect(() => {
     fetchState().catch(console.error)
-    if (stage === 'write' || stage === 'complete') return
+    if (stage === 'write' || stage === 'fullname' || stage === 'complete') return
 
     const interval = setInterval(() => fetchState().catch(console.error), 4000)
     return () => clearInterval(interval)
@@ -133,13 +134,11 @@ export default function PlayPage({
 
   useEffect(() => {
     if (!state) return
-    if (
+    const allDone =
       state.students.length > 0 &&
       state.progress.length > 0 &&
-      state.progress.every((p) => p.finished_last_char)
-    ) {
-      setStage('complete')
-    }
+      state.progress.every((p) => p.finished_last_char && p.goal_word === null)
+    if (allDone) setStage('complete')
   }, [state])
 
   const clearCanvas = useCallback(() => {
@@ -336,6 +335,7 @@ export default function PlayPage({
       void prefetchSpeech(`${student.first_name}, your turn!`)
     }
     void prefetchSpeech('All done! Great job everyone!')
+    void prefetchSpeech('Amazing! Now write your whole name!')
   }, [prefetchSpeech, state])
 
   if (!state) {
@@ -372,7 +372,8 @@ export default function PlayPage({
             setLetterStartIdx(p?.next_char ?? 0)
             setPendingNext(null)
             setFeedback(null)
-            setStage('write')
+            whiteboard.current?.renderAnnotations([])
+            setStage(p?.finished_last_char && p.goal_word !== null ? 'fullname' : 'write')
             clearCanvas()
           } catch (error) {
             toast.error((error as Error).message)
@@ -395,7 +396,7 @@ export default function PlayPage({
             return
           }
           const prog = state.progress.find((p) => p.student_id === student.id)
-          if (prog?.finished_last_char) {
+          if (prog?.finished_last_char && prog.goal_word === null) {
             toast.error('This student has already finished')
             return
           }
@@ -409,7 +410,7 @@ export default function PlayPage({
           const s = await fetchState()
           const p = s.progress.find((x) => x.student_id === student.id)
           setLetterStartIdx(p?.next_char ?? 0)
-          setStage('write')
+          setStage(p?.finished_last_char && p.goal_word !== null ? 'fullname' : 'write')
           void playSpeech(`${student.first_name}'s turn!`)
         }}
       />
@@ -420,11 +421,12 @@ export default function PlayPage({
   const myProg = state.progress.find((p) => p.student_id === myStudentId)!
   const nameLetters = cleanStudentName(me.first_name)
   const letter = nameLetters[myProg.next_char] ?? ''
+  const displayLetter = myProg.next_char === 0 ? letter.toUpperCase() : letter.toLowerCase()
   const myAttemptBudget =
     state.attemptBudget?.student_id === myStudentId ? state.attemptBudget : null
   const attemptsRemaining = myAttemptBudget?.remaining ?? MAX_LETTER_ATTEMPTS
   const attemptLimit = myAttemptBudget?.limit ?? MAX_LETTER_ATTEMPTS
-  const outOfAttempts = attemptsRemaining <= 0
+  const outOfAttempts = stage === 'write' && attemptsRemaining <= 0
   const nextStudent = pickNextStudent(state, myStudentId)
 
   const handleCheck = async () => {
@@ -461,6 +463,7 @@ export default function PlayPage({
           blockedReason: data.blockedReason,
         })
         void playSpeech(data.feedbackText)
+        whiteboard.current?.renderAnnotations((data.annotations ?? []) as StrokeAnnotation[])
       }
 
       await fetchState()
@@ -479,24 +482,22 @@ export default function PlayPage({
       body: JSON.stringify({ studentId: myStudentId, next_char: nextChar }),
     })
     await readResponse<{ ok: true }>(res)
+    whiteboard.current?.renderAnnotations([])
     clearCanvas()
     const s = await fetchState()
     const myNew = s.progress.find((p) => p.student_id === myStudentId)!
 
-    if (s.progress.every((p) => p.finished_last_char)) {
-      setStage('complete')
-      return
+    if (myNew.finished_last_char) {
+      setFeedback(null)
+      if (myNew.goal_word !== null) {
+        setStage('fullname')
+        void playSpeech('Amazing! Now write your whole name!')
+        return
+      }
     }
 
-    if (myNew.finished_last_char) {
-      const nextS = pickNextStudent(s, myStudentId!)
-      if (nextS) {
-        setPendingNext(nextS)
-        setStage('pass')
-        void playSpeech(`${nextS.first_name}, your turn!`)
-      } else {
-        setStage('complete')
-      }
+    if (s.progress.every((p) => p.finished_last_char && p.goal_word === null)) {
+      setStage('complete')
       return
     }
 
@@ -511,6 +512,38 @@ export default function PlayPage({
     }
   }
 
+  const handleFullNameDone = async () => {
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      const res = await fetch(`/api/play/${groupId}/progress`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentId: myStudentId, goal_word: null }),
+      })
+      await readResponse<{ ok: true }>(res)
+      whiteboard.current?.renderAnnotations([])
+      clearCanvas()
+      const s = await fetchState()
+      if (s.progress.every((p) => p.finished_last_char && p.goal_word === null)) {
+        setStage('complete')
+        return
+      }
+      const nextS = pickNextStudent(s, myStudentId!)
+      if (nextS) {
+        setPendingNext(nextS)
+        setStage('pass')
+        void playSpeech(`${nextS.first_name}, your turn!`)
+      } else {
+        setStage('complete')
+      }
+    } catch (error) {
+      toast.error((error as Error).message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
     <main className="flex h-dvh flex-col bg-gradient-to-b from-background to-secondary/30">
       <header className="flex items-center justify-between gap-3 px-6 py-4">
@@ -521,24 +554,37 @@ export default function PlayPage({
             {nextStudent ? `Next: ${nextStudent.first_name}` : 'Last turn in the group'}
           </p>
         </div>
-        <div className="flex flex-col items-center">
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Letter</p>
-          <div className="grid h-20 w-20 place-items-center rounded-3xl bg-primary/15 font-display text-6xl font-bold text-primary shadow-inner">
-            <span className="opacity-30">{letter.toUpperCase()}</span>
+        {stage === 'fullname' ? (
+          <div className="flex flex-col items-center">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground">Write your name</p>
+            <div className="flex h-20 items-center rounded-3xl bg-primary/15 px-6 font-display text-4xl font-bold text-primary shadow-inner">
+              <span className="opacity-30">{me.first_name}</span>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex flex-col items-center">
+            <p className="text-xs uppercase tracking-wider text-muted-foreground">Letter</p>
+            <div className="grid h-20 w-20 place-items-center rounded-3xl bg-primary/15 font-display text-6xl font-bold text-primary shadow-inner">
+              <span className="opacity-30">{displayLetter}</span>
+            </div>
+          </div>
+        )}
         <div className="text-right">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Turn</p>
           <p className="font-medium">
             {state.group.current_student_id === myStudentId ? 'Now writing' : 'Waiting'}
           </p>
-          <p className="text-xs uppercase tracking-wider text-muted-foreground">Progress</p>
-          <p className="font-display text-xl font-bold">
-            {myProg.next_char + 1} / {nameLetters.length}
-          </p>
-          <p className="mt-1 text-xs font-medium text-muted-foreground">
-            {attemptsRemaining} of {attemptLimit} tries left
-          </p>
+          {stage !== 'fullname' && (
+            <>
+              <p className="text-xs uppercase tracking-wider text-muted-foreground">Progress</p>
+              <p className="font-display text-xl font-bold">
+                {myProg.next_char + 1} / {nameLetters.length}
+              </p>
+              <p className="mt-1 text-xs font-medium text-muted-foreground">
+                {attemptsRemaining} of {attemptLimit} tries left
+              </p>
+            </>
+          )}
         </div>
       </header>
 
@@ -563,7 +609,7 @@ export default function PlayPage({
             : 'Listen to your helper voice'}
         </div>
       )}
-      {!feedback?.success && outOfAttempts && (
+      {stage === 'write' && !feedback?.success && outOfAttempts && (
         <div className="mx-4 mt-3 rounded-2xl bg-amber-100 px-4 py-3 text-center text-sm font-medium text-amber-900 ring-1 ring-amber-300">
           No more tries left for this letter right now. Ask your teacher before moving on.
         </div>
@@ -597,10 +643,12 @@ export default function PlayPage({
         {feedback?.success ? (
           <Button
             size="lg"
-            onClick={handleNextLetter}
+            onClick={stage === 'fullname' ? handleFullNameDone : handleNextLetter}
+            disabled={submitting}
             className="h-16 flex-1 gap-2 rounded-full text-xl"
           >
-            <ArrowRight className="h-6 w-6" /> Next letter
+            <ArrowRight className="h-6 w-6" />
+            {stage === 'fullname' ? 'I wrote my name!' : 'Next letter'}
           </Button>
         ) : (
           <Button
@@ -614,7 +662,9 @@ export default function PlayPage({
               ? 'Checking…'
               : outOfAttempts
                 ? 'No more tries left'
-                : 'Check my letter'}
+                : stage === 'fullname'
+                  ? 'Check my name'
+                  : 'Check my letter'}
           </Button>
         )}
       </div>
@@ -643,7 +693,7 @@ function PickName({
         <div className="mt-8 grid gap-3">
           {state.students.map((s) => {
             const prog = state.progress.find((p) => p.student_id === s.id)
-            const done = prog?.finished_last_char ?? false
+            const done = prog?.finished_last_char && prog.goal_word === null
             return (
               <button
                 key={s.id}
@@ -690,7 +740,7 @@ function PassScreen({
           onClick={onReady}
           className="mt-12 h-16 rounded-full px-12 text-2xl"
         >
-          I'm ready
+          I&apos;m ready
         </Button>
       </div>
     </main>

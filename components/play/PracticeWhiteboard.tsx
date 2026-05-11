@@ -1,8 +1,9 @@
 'use client'
 
 import { forwardRef, memo, useEffect, useImperativeHandle, useRef } from 'react'
-import { Editor, Tldraw } from 'tldraw'
+import { createShapeId, Editor, Tldraw } from 'tldraw'
 import 'tldraw/tldraw.css'
+import type { StrokeAnnotation } from '@/lib/gemini'
 
 const HIDDEN_UI = {
   ContextMenu: null,
@@ -25,11 +26,15 @@ const HIDDEN_UI = {
   SharePanel: null,
 } as const
 
+const CIRCLE_RADIUS = 40
+const ANNOTATION_COLORS = ['red', 'blue', 'green'] as const
+
 type WhiteboardTool = 'draw' | 'eraser'
 
 export type PracticeWhiteboardHandle = {
   clear: () => void
   exportImage: () => Promise<{ imageBase64: string; mimeType: 'image/png' } | null>
+  renderAnnotations: (annotations: StrokeAnnotation[]) => void
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -50,6 +55,13 @@ export const PracticeWhiteboard = memo(
     ref
   ) {
     const editorRef = useRef<Editor | null>(null)
+    const annotationIdsRef = useRef<Set<string>>(new Set())
+    const lastExportRef = useRef<{
+      worldOriginX: number
+      worldOriginY: number
+      width: number
+      height: number
+    } | null>(null)
 
     useEffect(() => {
       editorRef.current?.setCurrentTool(tool)
@@ -61,18 +73,31 @@ export const PracticeWhiteboard = memo(
         clear() {
           const editor = editorRef.current
           if (!editor) return
-
-          const shapeIds = Array.from(editor.getCurrentPageShapeIds())
-          if (shapeIds.length > 0) {
-            editor.deleteShapes(shapeIds)
-          }
+          const shapeIds = Array.from(editor.getCurrentPageShapeIds() as Set<string>).filter(
+            (id) => !annotationIdsRef.current.has(id)
+          )
+          if (shapeIds.length > 0) editor.deleteShapes(shapeIds)
         },
+
         async exportImage() {
           const editor = editorRef.current
           if (!editor) return null
 
-          const shapeIds = Array.from(editor.getCurrentPageShapeIds())
+          const allShapeIds = Array.from(editor.getCurrentPageShapeIds() as Set<string>)
+          const shapeIds = allShapeIds.filter((id) => !annotationIdsRef.current.has(id))
           if (shapeIds.length === 0) return null
+
+          let minX = Infinity
+          let minY = Infinity
+          for (const id of shapeIds) {
+            const bounds = editor.getShapePageBounds(id)
+            if (bounds) {
+              if (bounds.minX < minX) minX = bounds.minX
+              if (bounds.minY < minY) minY = bounds.minY
+            }
+          }
+          const worldOriginX = isFinite(minX) ? minX - 32 : 0
+          const worldOriginY = isFinite(minY) ? minY - 32 : 0
 
           const result = await editor.toImage(shapeIds, {
             format: 'png',
@@ -81,10 +106,62 @@ export const PracticeWhiteboard = memo(
             padding: 32,
           })
 
+          lastExportRef.current = {
+            worldOriginX,
+            worldOriginY,
+            width: result.width,
+            height: result.height,
+          }
+
           return {
             imageBase64: await blobToBase64(result.blob),
             mimeType: 'image/png' as const,
           }
+        },
+
+        renderAnnotations(annotations: StrokeAnnotation[]) {
+          const editor = editorRef.current
+          if (!editor) return
+
+          const prev = [...annotationIdsRef.current]
+          if (prev.length) editor.deleteShapes(prev)
+          annotationIdsRef.current = new Set()
+
+          if (!annotations?.length) return
+
+          const exportInfo = lastExportRef.current
+          const worldOriginX = exportInfo?.worldOriginX ?? 0
+          const worldOriginY = exportInfo?.worldOriginY ?? 0
+          const imgW = exportInfo?.width ?? 1000
+          const imgH = exportInfo?.height ?? 1000
+
+          const newIds: string[] = []
+          for (let i = 0; i < annotations.length; i++) {
+            const ann = annotations[i]
+            const color = ANNOTATION_COLORS[i % ANNOTATION_COLORS.length]
+            const px = (ann.center[0] / 1000) * imgW
+            const py = (ann.center[1] / 1000) * imgH
+            const circleId = createShapeId()
+            editor.createShapes([
+              {
+                id: circleId,
+                type: 'geo',
+                x: worldOriginX + px - CIRCLE_RADIUS,
+                y: worldOriginY + py - CIRCLE_RADIUS,
+                props: {
+                  geo: 'ellipse',
+                  w: CIRCLE_RADIUS * 2,
+                  h: CIRCLE_RADIUS * 2,
+                  color,
+                  fill: 'none',
+                  size: 'm',
+                  dash: 'solid',
+                },
+              },
+            ])
+            newIds.push(circleId as string)
+          }
+          annotationIdsRef.current = new Set(newIds)
         },
       }),
       []

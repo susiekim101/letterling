@@ -5,6 +5,9 @@ import { MAX_LETTER_ATTEMPTS, getTargetLetter } from '@/lib/student-writing'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { NextRequest } from 'next/server'
 
+const MAX_BASE64_CHARS = 4 * 1024 * 1024 // ~3 MB raw image
+const ALLOWED_MIME = new Set(['image/png', 'image/jpeg'])
+
 type GradeResponse = HandwritingFeedback & {
   attemptLimit: number
   attemptsRemaining: number
@@ -39,8 +42,14 @@ export async function POST(request: NextRequest) {
   const body = await request.json()
   const { imageBase64, mimeType = 'image/png' } = body
 
-  if (!imageBase64) {
+  if (typeof imageBase64 !== 'string' || !imageBase64) {
     return Response.json({ error: 'imageBase64 is required' }, { status: 400 })
+  }
+  if (!ALLOWED_MIME.has(mimeType)) {
+    return Response.json({ error: 'Invalid mimeType' }, { status: 400 })
+  }
+  if (imageBase64.length > MAX_BASE64_CHARS) {
+    return Response.json({ error: 'Image too large' }, { status: 413 })
   }
 
   const playSession = readPlaySession(request)
@@ -81,9 +90,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!group.current_student_id) {
-    return jsonFailure('Tap a name before checking a letter.', {
-      status: 409,
-    })
+    return jsonFailure('Tap a name before checking a letter.', { status: 409 })
   }
 
   const { data: membership } = await supabase
