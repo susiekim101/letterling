@@ -1,4 +1,8 @@
-import { cleanupUnhostedTeacherSessions, isHostedSessionValid } from '@/lib/session-host'
+import {
+  cleanupInvalidActiveMemberships,
+  cleanupUnhostedTeacherSessions,
+  isHostedSessionValid,
+} from '@/lib/session-host'
 import { loadSessionSnapshot } from '@/lib/session-data'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -74,6 +78,8 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: 'session_id is required' }, { status: 400 })
   }
 
+  await cleanupInvalidActiveMemberships(admin, user.id, selectedIds)
+
   const { data: session, error: sessionError } = await supabase
     .from('sessions')
     .select('id, status')
@@ -90,7 +96,7 @@ export async function POST(request: NextRequest) {
 
   const { data: students, error: studentsError } = await supabase
     .from('students')
-    .select('id, first_name, group_id')
+    .select('id, first_name')
     .in('id', selectedIds)
 
   if (studentsError) {
@@ -183,16 +189,27 @@ export async function POST(request: NextRequest) {
     .insert(memberships)
 
   if (insertMembershipError) {
-    return Response.json({ error: insertMembershipError.message }, { status: 500 })
-  }
+    await supabase.from('groups').delete().eq('id', group.id)
 
-  const { error: updateStudentsError } = await supabase
-    .from('students')
-    .update({ group_id: group.id })
-    .in('id', selectedIds)
+    const conflictStudents = await supabase
+      .from('group_memberships')
+      .select('student_id')
+      .in('student_id', selectedIds)
+      .eq('status', 'active')
 
-  if (updateStudentsError) {
-    return Response.json({ error: updateStudentsError.message }, { status: 500 })
+    const takenStudentIds = (conflictStudents.data ?? []).map((membership) => membership.student_id)
+    const status = insertMembershipError.code === '23505' ? 409 : 500
+
+    return Response.json(
+      {
+        error:
+          status === 409
+            ? 'Some selected students are still assigned to another group. Refresh and try again.'
+            : insertMembershipError.message,
+        takenStudentIds,
+      },
+      { status }
+    )
   }
 
   for (const student of students ?? []) {

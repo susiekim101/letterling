@@ -90,11 +90,6 @@ export async function PUT(
 
     if (activeStudentIds.length > 0) {
       await supabase
-        .from('students')
-        .update({ group_id: null })
-        .in('id', activeStudentIds)
-
-      await supabase
         .from('student_progress')
         .update({
           next_char: 0,

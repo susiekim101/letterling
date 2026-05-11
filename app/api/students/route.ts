@@ -1,4 +1,8 @@
-import { cleanupUnhostedTeacherSessions, isHostedSessionValid } from '@/lib/session-host'
+import {
+  cleanupInvalidActiveMemberships,
+  cleanupUnhostedTeacherSessions,
+  isHostedSessionValid,
+} from '@/lib/session-host'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest } from 'next/server'
@@ -13,10 +17,32 @@ export async function GET(request: NextRequest) {
 
   const admin = createAdminClient()
   await cleanupUnhostedTeacherSessions(admin, user.id)
+  await cleanupInvalidActiveMemberships(admin, user.id)
 
   const groupId = request.nextUrl.searchParams.get('group_id')
+  let studentIdsForGroup: string[] | null = null
+  if (groupId) {
+    const { data: groupMemberships, error: groupMembershipError } = await supabase
+      .from('group_memberships')
+      .select('student_id')
+      .eq('group_id', groupId)
+      .eq('status', 'active')
+      .eq('teacher_id', user.id)
+
+    if (groupMembershipError) {
+      return Response.json({ error: groupMembershipError.message }, { status: 500 })
+    }
+
+    studentIdsForGroup = (groupMemberships ?? []).map((membership) => membership.student_id)
+    if (studentIdsForGroup.length === 0) {
+      return Response.json([])
+    }
+  }
+
   let query = supabase.from('students').select('*').order('first_name')
-  if (groupId) query = query.eq('group_id', groupId)
+  if (studentIdsForGroup) {
+    query = query.in('id', studentIdsForGroup)
+  }
 
   const { data: students, error } = await query
   if (error) return Response.json({ error: error.message }, { status: 500 })

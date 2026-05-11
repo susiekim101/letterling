@@ -22,7 +22,6 @@ export type Student = {
   first_name: string
   last_name: string
   parent_email: string | null
-  group_id: string | null
   active_assignment?: {
     group_id: string
     session_id: string

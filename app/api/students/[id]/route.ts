@@ -25,11 +25,11 @@ export async function PUT(
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await request.json()
-  const { first_name, last_name, parent_email, group_id } = body
+  const { first_name, last_name, parent_email } = body
 
   const { data, error } = await supabase
     .from('students')
-    .update({ first_name, last_name, parent_email, group_id })
+    .update({ first_name, last_name, parent_email })
     .eq('id', id)
     .select()
     .single()

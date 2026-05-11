@@ -120,12 +120,6 @@ export async function PUT(
       return Response.json({ error: membershipError.message }, { status: 500 })
     }
 
-    await supabase
-      .from('students')
-      .update({ group_id: null })
-      .eq('id', studentId)
-      .eq('group_id', id)
-
     const { data: activeMemberships, error: remainingError } = await supabase
       .from('group_memberships')
       .select('student_id', { count: 'exact' })
