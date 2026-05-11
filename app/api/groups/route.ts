@@ -3,6 +3,7 @@ import {
   cleanupUnhostedTeacherSessions,
   isHostedSessionValid,
 } from '@/lib/session-host'
+import { generateGroupCode } from '@/lib/group-code'
 import { loadSessionSnapshot } from '@/lib/session-data'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
@@ -13,7 +14,7 @@ async function generateUniqueGroupCode(
   supabase: any
 ) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const code = Math.floor(1000 + Math.random() * 9000)
+    const code = generateGroupCode()
     const { data: existing } = await supabase
       .from('groups')
       .select('id')

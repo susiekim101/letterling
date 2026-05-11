@@ -98,6 +98,7 @@ export async function GET(request: NextRequest, { params }: Params) {
         .from('student_progress')
         .select('student_id, next_char, goal_word, finished_last_char')
         .in('student_id', studentIds)
+        .eq('teacher_id', group.teacher_id)
     : { data: [] }
 
   let attemptBudget: AttemptBudget | null = null
@@ -122,6 +123,7 @@ export async function GET(request: NextRequest, { params }: Params) {
           .eq('session_id', group.session_id)
           .eq('group_id', group.id)
           .eq('student_id', activeStudent.id)
+          .eq('teacher_id', group.teacher_id)
           .eq('letter_index', activeProgress.next_char)
 
         if (attemptError) {

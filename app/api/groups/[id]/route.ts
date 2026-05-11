@@ -1,3 +1,4 @@
+import { generateGroupCode } from '@/lib/group-code'
 import { loadSessionSnapshot } from '@/lib/session-data'
 import { createClient } from '@/lib/supabase/server'
 import { NextRequest } from 'next/server'
@@ -7,7 +8,7 @@ async function generateUniqueGroupCode(
   supabase: any
 ) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const code = Math.floor(1000 + Math.random() * 9000)
+    const code = generateGroupCode()
     const { data: existing } = await supabase
       .from('groups')
       .select('id')

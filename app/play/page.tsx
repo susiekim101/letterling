@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { PenLine, Delete } from 'lucide-react'
 import { toast } from 'sonner'
+import { GROUP_CODE_DIGITS, GROUP_CODE_LEGACY_DIGITS } from '@/lib/group-code'
 
 export default function JoinPage() {
   const [code, setCode] = useState('')
@@ -14,18 +15,18 @@ export default function JoinPage() {
   const router = useRouter()
 
   const setCodeValue = (value: string) => {
-    const digitsOnly = value.replace(/\D/g, '').slice(0, 4)
+    const digitsOnly = value.replace(/\D/g, '').slice(0, GROUP_CODE_DIGITS)
     setCode(digitsOnly)
   }
 
   const press = (d: string) => {
-    if (code.length >= 4) return
+    if (code.length >= GROUP_CODE_DIGITS) return
     setCode(code + d)
   }
   const back = () => setCode(code.slice(0, -1))
 
   const submit = async () => {
-    if (code.length !== 4) return
+    if (code.length < GROUP_CODE_LEGACY_DIGITS || code.length > GROUP_CODE_DIGITS) return
     setLoading(true)
     try {
       const res = await fetch(`/api/play/join?code=${code}`)
@@ -62,13 +63,13 @@ export default function JoinPage() {
             }}
             inputMode="numeric"
             pattern="[0-9]*"
-            placeholder="Enter 4-digit code"
+            placeholder="Enter classroom code"
             className="h-14 rounded-2xl text-center text-2xl font-bold tracking-[0.6em]"
           />
         </div>
 
         <div className="mt-8 flex gap-2">
-          {[0, 1, 2, 3].map((i) => (
+          {Array.from({ length: GROUP_CODE_DIGITS }, (_, i) => i).map((i) => (
             <div
               key={i}
               className={`grid h-20 w-14 place-items-center rounded-2xl bg-card font-display text-4xl font-bold shadow-sm ring-2 transition ${
@@ -107,7 +108,7 @@ export default function JoinPage() {
 
         <Button
           size="lg"
-          disabled={code.length !== 4 || loading}
+          disabled={code.length < GROUP_CODE_LEGACY_DIGITS || loading}
           onClick={submit}
           className="mt-8 h-16 w-full rounded-full bg-emerald-500 text-xl text-white hover:bg-emerald-600 disabled:bg-emerald-500/50"
         >

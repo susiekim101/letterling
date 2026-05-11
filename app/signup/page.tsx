@@ -29,6 +29,12 @@ export default function Signup() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Failed to create account')
 
+      if (data.requiresEmailConfirmation) {
+        toast.success('Check your email to confirm your account, then log in.')
+        router.push('/login')
+        return
+      }
+
       const supabase = createClient()
       const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
       if (signInError) throw signInError

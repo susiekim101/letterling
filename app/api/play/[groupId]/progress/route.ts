@@ -65,6 +65,7 @@ export async function PUT(request: NextRequest, { params }: Params) {
     .from('student_progress')
     .update({ next_char, updated_at: new Date().toISOString() })
     .eq('student_id', studentId)
+    .eq('teacher_id', session.teacher_id)
   if (error) return Response.json({ error: error.message }, { status: 500 })
 
   const nowIso = new Date().toISOString()

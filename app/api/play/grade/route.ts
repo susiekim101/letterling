@@ -119,6 +119,7 @@ export async function POST(request: NextRequest) {
     .from('student_progress')
     .select('student_id, next_char, goal_word, finished_last_char')
     .eq('student_id', student.id)
+    .eq('teacher_id', group.teacher_id)
     .maybeSingle()
 
   if (progressResult.error) {
@@ -164,6 +165,7 @@ export async function POST(request: NextRequest) {
     .eq('session_id', group.session_id)
     .eq('group_id', group.id)
     .eq('student_id', student.id)
+    .eq('teacher_id', group.teacher_id)
     .eq('letter_index', progress.next_char)
 
   if (attemptError) {
