@@ -1,8 +1,9 @@
 'use client'
 
-import { useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useMemo, useState } from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -12,7 +13,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Play, Plus, Users } from 'lucide-react'
+import { Play, Plus, Search, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Student } from './StudentList'
 
@@ -30,6 +31,7 @@ export function CreateSessionDialog({
   const [open, setOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [lettersPerTurn, setLettersPerTurn] = useState(1)
+  const [search, setSearch] = useState('')
 
   const { data: students = [] } = useQuery({
     queryKey: ['students'],
@@ -41,22 +43,52 @@ export function CreateSessionDialog({
     enabled: open,
   })
 
-  const toggle = (id: string) => {
+  const visibleStudents = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    if (!query) return students
+
+    return students.filter((student) =>
+      `${student.first_name} ${student.last_name}`.toLowerCase().includes(query)
+    )
+  }, [search, students])
+
+  const toggle = (student: Student) => {
+    if (student.active_assignment) {
+      toast.error('This student is already in an active group')
+      return
+    }
+
     setSelectedIds((prev) => {
-      if (prev.includes(id)) return prev.filter((x) => x !== id)
+      if (prev.includes(student.id)) return prev.filter((id) => id !== student.id)
       if (prev.length >= 5) {
         toast.error('Max 5 students per group')
         return prev
       }
-      return [...prev, id]
+      return [...prev, student.id]
     })
   }
+
+  const selectVisible = () => {
+    const availableIds = visibleStudents
+      .filter((student) => !student.active_assignment)
+      .map((student) => student.id)
+
+    setSelectedIds((prev) => {
+      const merged = Array.from(new Set([...prev, ...availableIds]))
+      if (merged.length > 5) {
+        toast.error('Groups can have up to 5 students')
+        return merged.slice(0, 5)
+      }
+      return merged
+    })
+  }
+
+  const clearAll = () => setSelectedIds([])
 
   const start = useMutation({
     mutationFn: async () => {
       if (selectedIds.length === 0) throw new Error('Select at least one student')
 
-      // Create session if this is the first group
       let sid = sessionId
       if (!sid) {
         const sessionRes = await fetch('/api/sessions', { method: 'POST' })
@@ -68,35 +100,19 @@ export function CreateSessionDialog({
         sid = session.id
       }
 
-      // Create group linked to the session
       const groupRes = await fetch('/api/groups', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           letters_per_turn: lettersPerTurn,
-          num_students: selectedIds.length,
+          student_ids: selectedIds,
           session_id: sid,
         }),
       })
+      const payload = await groupRes.json().catch(() => null)
       if (!groupRes.ok) {
-        const err = await groupRes.json()
-        throw new Error(err.error ?? 'Failed to create group')
+        throw new Error(payload?.error ?? 'Failed to create group')
       }
-      const group = await groupRes.json()
-
-      // Assign students to group
-      await Promise.all(
-        selectedIds.map((studentId) =>
-          fetch(`/api/students/${studentId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ group_id: group.id }),
-          })
-        )
-      )
-
-      // Seed progress rows
-      await Promise.all(selectedIds.map((studentId) => fetch(`/api/student-progress/${studentId}`)))
 
       return sid as string
     },
@@ -105,6 +121,7 @@ export function CreateSessionDialog({
       setOpen(false)
       setSelectedIds([])
       setLettersPerTurn(1)
+      setSearch('')
       onSessionStarted(sid)
     },
     onError: (e: Error) => toast.error(e.message),
@@ -119,7 +136,7 @@ export function CreateSessionDialog({
           <Icon className="h-5 w-5" /> {triggerLabel}
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto rounded-3xl">
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto rounded-3xl">
         <DialogHeader>
           <DialogTitle className="text-2xl">
             {sessionId ? 'Add group to session' : 'New session'}
@@ -132,43 +149,105 @@ export function CreateSessionDialog({
           </p>
         ) : (
           <div className="space-y-6">
-            <div>
-              <Label>Letters per turn</Label>
-              <Input
-                type="number"
-                min={1}
-                max={10}
-                value={lettersPerTurn}
-                onChange={(e) => setLettersPerTurn(parseInt(e.target.value) || 1)}
-                className="mt-1.5 w-28 rounded-xl"
-              />
+            <div className="flex flex-wrap items-end gap-4">
+              <div>
+                <Label>Letters per turn</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={lettersPerTurn}
+                  onChange={(e) => setLettersPerTurn(parseInt(e.target.value, 10) || 1)}
+                  className="mt-1.5 w-28 rounded-xl"
+                />
+              </div>
+              <div className="flex-1">
+                <Label htmlFor="student-search">Find students</Label>
+                <div className="relative mt-1.5">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="student-search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search by name"
+                    className="rounded-xl pl-9"
+                  />
+                </div>
+              </div>
             </div>
 
-            <div>
-              <Label className="mb-2 block">
-                Students{' '}
-                <span className="font-normal text-muted-foreground">
-                  ({selectedIds.length}/5)
-                </span>
-              </Label>
-              <div className="flex flex-wrap gap-2">
-                {students.map((s) => {
-                  const selected = selectedIds.includes(s.id)
-                  return (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => toggle(s.id)}
-                      className={`rounded-full px-3 py-1.5 text-sm transition ${
-                        selected
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-card text-foreground ring-1 ring-border hover:bg-muted'
-                      }`}
-                    >
-                      {s.first_name} {s.last_name[0]}.
-                    </button>
-                  )
-                })}
+            <div className="rounded-3xl border border-border">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+                <Label className="block">
+                  Students{' '}
+                  <span className="font-normal text-muted-foreground">
+                    ({selectedIds.length}/5 selected)
+                  </span>
+                </Label>
+                <div className="flex gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={selectVisible}>
+                    Select visible
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={clearAll}>
+                    Clear
+                  </Button>
+                </div>
+              </div>
+              <div className="max-h-[360px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40 text-left text-xs uppercase tracking-wider text-muted-foreground">
+                    <tr>
+                      <th className="w-14 px-4 py-3">Pick</th>
+                      <th className="px-4 py-3">Student</th>
+                      <th className="px-4 py-3 text-right">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleStudents.map((student) => {
+                      const selected = selectedIds.includes(student.id)
+                      const disabled = Boolean(student.active_assignment)
+
+                      return (
+                        <tr
+                          key={student.id}
+                          className={`border-t border-border ${disabled ? 'bg-muted/40' : ''}`}
+                        >
+                          <td className="px-4 py-3">
+                            <Checkbox
+                              checked={selected}
+                              disabled={disabled}
+                              onCheckedChange={() => toggle(student)}
+                              aria-label={`Select ${student.first_name} ${student.last_name}`}
+                            />
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="font-medium">
+                              {student.first_name} {student.last_name}
+                            </div>
+                            {student.parent_email && (
+                              <div className="text-xs text-muted-foreground">
+                                {student.parent_email}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right text-xs font-medium">
+                            {disabled ? (
+                              <span className="rounded-full bg-amber-100 px-2.5 py-1 text-amber-900">
+                                Already in active group
+                              </span>
+                            ) : selected ? (
+                              <span className="rounded-full bg-primary/15 px-2.5 py-1 text-primary">
+                                Selected
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">Available</span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
 
@@ -179,7 +258,7 @@ export function CreateSessionDialog({
               size="lg"
             >
               <Users className="h-5 w-5" />
-              {start.isPending ? 'Starting…' : sessionId ? 'Add group' : 'Start session'}
+              {start.isPending ? 'Saving…' : sessionId ? 'Add group' : 'Start session'}
             </Button>
           </div>
         )}

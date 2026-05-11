@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { PenLine, Delete } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -11,6 +12,11 @@ export default function JoinPage() {
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
   const router = useRouter()
+
+  const setCodeValue = (value: string) => {
+    const digitsOnly = value.replace(/\D/g, '').slice(0, 4)
+    setCode(digitsOnly)
+  }
 
   const press = (d: string) => {
     if (code.length >= 4) return
@@ -42,7 +48,24 @@ export default function JoinPage() {
           <span className="font-display text-xl font-bold">Letterling</span>
         </Link>
         <h1 className="text-center font-display text-4xl font-bold">Type your group code</h1>
-        <p className="mt-2 text-center text-muted-foreground">Your teacher will read it out loud.</p>
+        <p className="mt-2 text-center text-muted-foreground">
+          Your teacher will read it out loud, or you can paste it here.
+        </p>
+
+        <div className="mt-6 w-full">
+          <Input
+            value={code}
+            onChange={(e) => setCodeValue(e.target.value)}
+            onPaste={(e) => {
+              e.preventDefault()
+              setCodeValue(e.clipboardData.getData('text'))
+            }}
+            inputMode="numeric"
+            pattern="[0-9]*"
+            placeholder="Enter 4-digit code"
+            className="h-14 rounded-2xl text-center text-2xl font-bold tracking-[0.6em]"
+          />
+        </div>
 
         <div className="mt-8 flex gap-2">
           {[0, 1, 2, 3].map((i) => (

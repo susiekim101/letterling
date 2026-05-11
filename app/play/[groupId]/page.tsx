@@ -1,36 +1,16 @@
 'use client'
 
 import { use, useCallback, useEffect, useRef, useState } from 'react'
+import { PracticeWhiteboard, type PracticeWhiteboardHandle } from '@/components/play/PracticeWhiteboard'
 import { Button } from '@/components/ui/button'
+import {
+  MAX_LETTER_ATTEMPTS,
+  cleanStudentName,
+  type AttemptBudget,
+} from '@/lib/student-writing'
 import { toast } from 'sonner'
 import { PartyPopper, Trash2, Sparkles, ArrowRight, Pen, Eraser } from 'lucide-react'
-import { Tldraw } from 'tldraw'
-import 'tldraw/tldraw.css'
-
-// Avoid SSR — tldraw uses browser APIs
-// const Tldraw = dynamic(() => import('tldraw').then((m) => m.Tldraw), { ssr: false })
-
-// Defined outside component so it's stable (required by tldraw)
-const HIDDEN_UI = {
-  ContextMenu: null,
-  ActionsMenu: null,
-  HelpMenu: null,
-  ZoomMenu: null,
-  MainMenu: null,
-  Minimap: null,
-  StylePanel: null,
-  PageMenu: null,
-  NavigationPanel: null,
-  Toolbar: null,
-  KeyboardShortcutsDialog: null,
-  QuickActions: null,
-  HelperButtons: null,
-  DebugPanel: null,
-  DebugMenu: null,
-  MenuPanel: null,
-  TopPanel: null,
-  SharePanel: null,
-} as const
+import { useRouter } from 'next/navigation'
 
 type Student = { id: string; first_name: string; last_name: string }
 type Progress = {
@@ -49,9 +29,8 @@ type GroupState = {
   }
   students: Student[]
   progress: Progress[]
+  attemptBudget: AttemptBudget | null
 }
-
-const cleanName = (s: string) => s.replace(/[^a-zA-Z]/g, '')
 
 function speak(text: string) {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
@@ -62,18 +41,6 @@ function speak(text: string) {
     u.pitch = 1.1
     window.speechSynthesis.speak(u)
   } catch {}
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const dataUrl = reader.result as string
-      resolve(dataUrl.split(',')[1])
-    }
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
-  })
 }
 
 function pickNextStudent(state: GroupState, currentId: string): Student | null {
@@ -93,6 +60,7 @@ export default function PlayPage({
   params: Promise<{ groupId: string }>
 }) {
   const { groupId } = use(params)
+  const router = useRouter()
 
   const [state, setState] = useState<GroupState | null>(null)
   const [stage, setStage] = useState<'pick' | 'write' | 'pass' | 'complete'>('pick')
@@ -102,25 +70,53 @@ export default function PlayPage({
   const [feedback, setFeedback] = useState<{
     text: string
     success: boolean
+    attemptsRemaining: number
+    blockedReason?: 'attempt_limit'
   } | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [tool, setTool] = useState<'draw' | 'eraser'>('draw')
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const editor = useRef<any>(null)
+  const whiteboard = useRef<PracticeWhiteboardHandle | null>(null)
+
+  const redirectToJoin = useCallback(
+    (message: string) => {
+      toast.error(message)
+      router.replace('/play')
+    },
+    [router]
+  )
+
+  const readResponse = useCallback(
+    async <T,>(res: Response): Promise<T> => {
+      const payload = await res.json().catch(() => null)
+
+      if (res.status === 401 || res.status === 403) {
+        redirectToJoin(payload?.error ?? 'Join the session again to continue.')
+        throw new Error(payload?.error ?? 'Session expired')
+      }
+
+      if (!res.ok) {
+        throw new Error(payload?.error ?? 'Request failed')
+      }
+
+      return payload as T
+    },
+    [redirectToJoin]
+  )
 
   const fetchState = useCallback(async (): Promise<GroupState> => {
     const res = await fetch(`/api/play/${groupId}`)
-    if (!res.ok) throw new Error('Failed to load group')
-    const data: GroupState = await res.json()
+    const data = await readResponse<GroupState>(res)
     setState(data)
     return data
-  }, [groupId])
+  }, [groupId, readResponse])
 
   useEffect(() => {
     fetchState().catch(console.error)
+    if (stage === 'write' || stage === 'complete') return
+
     const interval = setInterval(() => fetchState().catch(console.error), 4000)
     return () => clearInterval(interval)
-  }, [fetchState])
+  }, [fetchState, stage])
 
   useEffect(() => {
     if (!state) return
@@ -134,10 +130,7 @@ export default function PlayPage({
   }, [state])
 
   const clearCanvas = useCallback(() => {
-    const ed = editor.current
-    if (!ed) return
-    const ids = [...ed.getCurrentPageShapeIds()]
-    if (ids.length) ed.deleteShapes(ids)
+    whiteboard.current?.clear()
     setFeedback(null)
   }, [])
 
@@ -156,11 +149,12 @@ export default function PlayPage({
       <PassScreen
         next={pendingNext}
         onReady={async () => {
-          await fetch(`/api/play/${groupId}`, {
+          const res = await fetch(`/api/play/${groupId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ studentId: pendingNext.id }),
           })
+          await readResponse<{ ok: true }>(res)
           setMyStudentId(pendingNext.id)
           const s = await fetchState()
           const p = s.progress.find((x) => x.student_id === pendingNext.id)
@@ -191,11 +185,12 @@ export default function PlayPage({
             toast.error('This student has already finished')
             return
           }
-          await fetch(`/api/play/${groupId}`, {
+          const res = await fetch(`/api/play/${groupId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ studentId: student.id }),
           })
+          await readResponse<{ ok: true }>(res)
           setMyStudentId(student.id)
           const s = await fetchState()
           const p = s.progress.find((x) => x.student_id === student.id)
@@ -208,35 +203,52 @@ export default function PlayPage({
 
   const me = state.students.find((s) => s.id === myStudentId)!
   const myProg = state.progress.find((p) => p.student_id === myStudentId)!
-  const nameLetters = cleanName(me.first_name)
+  const nameLetters = cleanStudentName(me.first_name)
   const letter = nameLetters[myProg.next_char] ?? ''
+  const myAttemptBudget =
+    state.attemptBudget?.student_id === myStudentId ? state.attemptBudget : null
+  const attemptsRemaining = myAttemptBudget?.remaining ?? MAX_LETTER_ATTEMPTS
+  const attemptLimit = myAttemptBudget?.limit ?? MAX_LETTER_ATTEMPTS
+  const outOfAttempts = attemptsRemaining <= 0
+  const nextStudent = pickNextStudent(state, myStudentId)
 
   const handleCheck = async () => {
-    const ed = editor.current
-    if (!ed) return
-    const shapeIds = Array.from(ed.getCurrentPageShapeIds() as Set<string>)
-    if (shapeIds.length === 0) {
+    const boardExport = await whiteboard.current?.exportImage()
+    if (!boardExport) {
       toast.error('Draw the letter first!')
       return
     }
+
     setSubmitting(true)
     setFeedback(null)
     try {
-      const result = await ed.toImage(shapeIds, {
-        format: 'png',
-        background: true,
-        scale: 1,
-        padding: 32,
-      })
-      const imageBase64 = await blobToBase64(result.blob)
       const res = await fetch('/api/play/grade', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64, mimeType: 'image/png', targetLetter: letter }),
+        body: JSON.stringify(boardExport),
       })
-      const data = await res.json()
-      setFeedback({ text: data.feedbackText, success: data.isSuccessful })
-      speak(data.feedbackText)
+      const data = await res.json().catch(() => null)
+
+      if (res.status === 401 || res.status === 403) {
+        redirectToJoin(data?.error ?? 'Join the session again to continue.')
+        return
+      }
+
+      if (!res.ok && !data?.feedbackText) {
+        throw new Error(data?.error ?? 'Failed to check letter')
+      }
+
+      if (data?.feedbackText) {
+        setFeedback({
+          text: data.feedbackText,
+          success: Boolean(data.isSuccessful),
+          attemptsRemaining: data.attemptsRemaining ?? 0,
+          blockedReason: data.blockedReason,
+        })
+        speak(data.feedbackText)
+      }
+
+      await fetchState()
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -246,11 +258,12 @@ export default function PlayPage({
 
   const handleNextLetter = async () => {
     const nextChar = myProg.next_char + 1
-    await fetch(`/api/play/${groupId}/progress`, {
+    const res = await fetch(`/api/play/${groupId}/progress`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ studentId: myStudentId, next_char: nextChar }),
     })
+    await readResponse<{ ok: true }>(res)
     clearCanvas()
     const s = await fetchState()
     const myNew = s.progress.find((p) => p.student_id === myStudentId)!
@@ -289,6 +302,9 @@ export default function PlayPage({
         <div>
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Writing</p>
           <h2 className="font-display text-xl font-bold">{me.first_name}</h2>
+          <p className="mt-1 text-xs font-medium text-muted-foreground">
+            {nextStudent ? `Next: ${nextStudent.first_name}` : 'Last turn in the group'}
+          </p>
         </div>
         <div className="flex flex-col items-center">
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Letter</p>
@@ -297,26 +313,21 @@ export default function PlayPage({
           </div>
         </div>
         <div className="text-right">
+          <p className="text-xs uppercase tracking-wider text-muted-foreground">Turn</p>
+          <p className="font-medium">
+            {state.group.current_student_id === myStudentId ? 'Now writing' : 'Waiting'}
+          </p>
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Progress</p>
           <p className="font-display text-xl font-bold">
             {myProg.next_char + 1} / {nameLetters.length}
           </p>
+          <p className="mt-1 text-xs font-medium text-muted-foreground">
+            {attemptsRemaining} of {attemptLimit} tries left
+          </p>
         </div>
       </header>
-      {/* <div style={{ position: 'fixed', inset: 0 }}>
-        <Tldraw />
-      </div> */}
 
-      <div className="relative mx-4 min-h-0 flex-1 overflow-hidden rounded-3xl bg-card shadow-lg ring-1 ring-border">
-        <Tldraw
-          components={HIDDEN_UI}
-          onMount={(ed) => {
-            editor.current = ed
-            ed.setCurrentTool('draw')
-            ed.updateInstanceState({ isDebugMode: false })
-          }}
-        />
-      </div>
+      <PracticeWhiteboard ref={whiteboard} tool={tool} />
 
       {feedback && (
         <div
@@ -329,12 +340,17 @@ export default function PlayPage({
           {feedback.text}
         </div>
       )}
+      {!feedback?.success && outOfAttempts && (
+        <div className="mx-4 mt-3 rounded-2xl bg-amber-100 px-4 py-3 text-center text-sm font-medium text-amber-900 ring-1 ring-amber-300">
+          No more tries left for this letter right now. Ask your teacher before moving on.
+        </div>
+      )}
 
       <div className="flex items-center gap-3 p-4">
         <Button
           variant={tool === 'draw' ? 'default' : 'outline'}
           size="lg"
-          onClick={() => { setTool('draw'); editor.current?.setCurrentTool('draw') }}
+          onClick={() => setTool('draw')}
           className="h-16 gap-2 rounded-full px-5 text-base"
         >
           <Pen className="h-5 w-5" />
@@ -342,7 +358,7 @@ export default function PlayPage({
         <Button
           variant={tool === 'eraser' ? 'default' : 'outline'}
           size="lg"
-          onClick={() => { setTool('eraser'); editor.current?.setCurrentTool('eraser') }}
+          onClick={() => setTool('eraser')}
           className="h-16 gap-2 rounded-full px-5 text-base"
         >
           <Eraser className="h-5 w-5" />
@@ -367,11 +383,15 @@ export default function PlayPage({
           <Button
             size="lg"
             onClick={handleCheck}
-            disabled={submitting}
+            disabled={submitting || outOfAttempts}
             className="h-16 flex-1 gap-2 rounded-full text-xl"
           >
             <Sparkles className="h-6 w-6" />
-            {submitting ? 'Checking…' : 'Check my letter'}
+            {submitting
+              ? 'Checking…'
+              : outOfAttempts
+                ? 'No more tries left'
+                : 'Check my letter'}
           </Button>
         )}
       </div>
@@ -392,7 +412,9 @@ function PickName({
         <h1 className="mt-2 text-center font-display text-4xl font-bold">Tap your name</h1>
         {state.group.current_student_id && (
           <p className="mt-3 text-center text-sm text-muted-foreground">
-            Someone is writing — pick your name to wait your turn.
+            {state.students.find((student) => student.id === state.group.current_student_id)?.first_name ??
+              'Someone'}{' '}
+            is writing right now. Pick your name to wait your turn.
           </p>
         )}
         <div className="mt-8 grid gap-3">
@@ -450,8 +472,23 @@ function CompleteScreen({ students }: { students: Student[] }) {
   }, [])
 
   return (
-    <main className="grid min-h-screen place-items-center bg-gradient-to-b from-background to-accent/40 px-6">
-      <div className="text-center">
+    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-gradient-to-b from-background to-accent/40 px-6">
+      <div className="pointer-events-none absolute inset-0">
+        {Array.from({ length: 18 }).map((_, index) => (
+          <div
+            key={index}
+            className="absolute text-amber-400 opacity-80"
+            style={{
+              left: `${8 + (index % 6) * 15}%`,
+              top: `${10 + Math.floor(index / 6) * 24}%`,
+              transform: `scale(${0.8 + (index % 3) * 0.25}) rotate(${index * 14}deg)`,
+            }}
+          >
+            <Sparkles className="h-8 w-8" />
+          </div>
+        ))}
+      </div>
+      <div className="relative text-center">
         <PartyPopper className="mx-auto h-20 w-20 text-primary" />
         <h1 className="mt-4 font-display text-5xl font-bold">All done!</h1>
         <p className="mt-3 text-lg text-muted-foreground">
