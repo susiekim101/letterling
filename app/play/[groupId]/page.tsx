@@ -4,8 +4,9 @@ import { use, useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
 import { PartyPopper, Trash2, Sparkles, ArrowRight, Pen, Eraser } from 'lucide-react'
-import { Tldraw } from 'tldraw'
+import { Tldraw, createShapeId, toRichText } from 'tldraw'
 import 'tldraw/tldraw.css'
+import type { StrokeAnnotation } from '@/lib/gemini'
 
 // Avoid SSR — tldraw uses browser APIs
 // const Tldraw = dynamic(() => import('tldraw').then((m) => m.Tldraw), { ssr: false })
@@ -107,6 +108,40 @@ export default function PlayPage({
   const [tool, setTool] = useState<'draw' | 'eraser'>('draw')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const editor = useRef<any>(null)
+  const annotationIds = useRef<Set<string>>(new Set())
+
+  const renderAnnotations = useCallback((annotations: StrokeAnnotation[]) => {
+    const ed = editor.current
+    if (!ed) return
+    // Clear previous annotation shapes first
+    const prev = [...annotationIds.current]
+    if (prev.length) ed.deleteShapes(prev)
+    annotationIds.current = new Set()
+    if (!annotations?.length) return
+    const newIds: string[] = []
+    for (const ann of annotations) {
+      const [x1, y1] = ann.arrow_start
+      const [x2, y2] = ann.arrow_end
+      const id = createShapeId()
+      ed.createShapes([{
+        id,
+        type: 'arrow',
+        x: x1,
+        y: y1,
+        props: {
+          start: { x: 0, y: 0 },
+          end: { x: x2 - x1, y: y2 - y1 },
+          color: 'red',
+          size: 'l',
+          arrowheadEnd: 'arrow',
+          arrowheadStart: 'none',
+          richText: toRichText(ann.instruction),
+        },
+      }])
+      newIds.push(id as string)
+    }
+    annotationIds.current = new Set(newIds)
+  }, [])
 
   const fetchState = useCallback(async (): Promise<GroupState> => {
     const res = await fetch(`/api/play/${groupId}`)
@@ -136,7 +171,10 @@ export default function PlayPage({
   const clearCanvas = useCallback(() => {
     const ed = editor.current
     if (!ed) return
-    const ids = [...ed.getCurrentPageShapeIds()]
+    // Only delete user-drawn shapes — leave annotation arrows intact
+    const ids = [...ed.getCurrentPageShapeIds()].filter(
+      (id) => !annotationIds.current.has(id)
+    )
     if (ids.length) ed.deleteShapes(ids)
     setFeedback(null)
   }, [])
@@ -214,7 +252,10 @@ export default function PlayPage({
   const handleCheck = async () => {
     const ed = editor.current
     if (!ed) return
-    const shapeIds = Array.from(ed.getCurrentPageShapeIds() as Set<string>)
+    // Exclude annotation arrows — only capture the student's strokes
+    const shapeIds = Array.from(ed.getCurrentPageShapeIds() as Set<string>).filter(
+      (id) => !annotationIds.current.has(id)
+    )
     if (shapeIds.length === 0) {
       toast.error('Draw the letter first!')
       return
@@ -237,6 +278,7 @@ export default function PlayPage({
       const data = await res.json()
       setFeedback({ text: data.feedbackText, success: data.isSuccessful })
       speak(data.feedbackText)
+      renderAnnotations(data.annotations ?? [])
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -251,6 +293,8 @@ export default function PlayPage({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ studentId: myStudentId, next_char: nextChar }),
     })
+    // Clear annotation arrows before moving on
+    renderAnnotations([])
     clearCanvas()
     const s = await fetchState()
     const myNew = s.progress.find((p) => p.student_id === myStudentId)!
