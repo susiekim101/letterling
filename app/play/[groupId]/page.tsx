@@ -297,6 +297,7 @@ export default function PlayPage({
           const p = s.progress.find((x) => x.student_id === student.id)
           setLetterStartIdx(p?.next_char ?? 0)
           setStage('write')
+          void playSpeech(`${student.first_name}'s turn!`)
         }}
       />
     )
