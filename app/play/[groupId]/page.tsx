@@ -1,13 +1,36 @@
 'use client'
 
-import dynamic from 'next/dynamic'
 import { use, useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { toast } from 'sonner'
-import { PartyPopper, Trash2, Sparkles, ArrowRight } from 'lucide-react'
+import { PartyPopper, Trash2, Sparkles, ArrowRight, Pen, Eraser } from 'lucide-react'
+import { Tldraw } from 'tldraw'
+import 'tldraw/tldraw.css'
 
 // Avoid SSR — tldraw uses browser APIs
-const Tldraw = dynamic(() => import('tldraw').then((m) => m.Tldraw), { ssr: false })
+// const Tldraw = dynamic(() => import('tldraw').then((m) => m.Tldraw), { ssr: false })
+
+// Defined outside component so it's stable (required by tldraw)
+const HIDDEN_UI = {
+  ContextMenu: null,
+  ActionsMenu: null,
+  HelpMenu: null,
+  ZoomMenu: null,
+  MainMenu: null,
+  Minimap: null,
+  StylePanel: null,
+  PageMenu: null,
+  NavigationPanel: null,
+  Toolbar: null,
+  KeyboardShortcutsDialog: null,
+  QuickActions: null,
+  HelperButtons: null,
+  DebugPanel: null,
+  DebugMenu: null,
+  MenuPanel: null,
+  TopPanel: null,
+  SharePanel: null,
+} as const
 
 type Student = { id: string; first_name: string; last_name: string }
 type Progress = {
@@ -81,8 +104,9 @@ export default function PlayPage({
     success: boolean
   } | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [tool, setTool] = useState<'draw' | 'eraser'>('draw')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const editorRef = useRef<any>(null)
+  const editor = useRef<any>(null)
 
   const fetchState = useCallback(async (): Promise<GroupState> => {
     const res = await fetch(`/api/play/${groupId}`)
@@ -110,9 +134,9 @@ export default function PlayPage({
   }, [state])
 
   const clearCanvas = useCallback(() => {
-    const ed = editorRef.current
+    const ed = editor.current
     if (!ed) return
-    const ids = Array.from(ed.getCurrentPageShapeIds() as Set<string>)
+    const ids = [...ed.getCurrentPageShapeIds()]
     if (ids.length) ed.deleteShapes(ids)
     setFeedback(null)
   }, [])
@@ -188,7 +212,7 @@ export default function PlayPage({
   const letter = nameLetters[myProg.next_char] ?? ''
 
   const handleCheck = async () => {
-    const ed = editorRef.current
+    const ed = editor.current
     if (!ed) return
     const shapeIds = Array.from(ed.getCurrentPageShapeIds() as Set<string>)
     if (shapeIds.length === 0) {
@@ -260,7 +284,7 @@ export default function PlayPage({
   }
 
   return (
-    <main className="flex min-h-screen flex-col bg-gradient-to-b from-background to-secondary/30">
+    <main className="flex h-dvh flex-col bg-gradient-to-b from-background to-secondary/30">
       <header className="flex items-center justify-between gap-3 px-6 py-4">
         <div>
           <p className="text-xs uppercase tracking-wider text-muted-foreground">Writing</p>
@@ -279,12 +303,15 @@ export default function PlayPage({
           </p>
         </div>
       </header>
+      {/* <div style={{ position: 'fixed', inset: 0 }}>
+        <Tldraw />
+      </div> */}
 
-      <div className="mx-4 flex-1 overflow-hidden rounded-3xl bg-card shadow-lg ring-1 ring-border">
+      <div className="relative mx-4 min-h-0 flex-1 overflow-hidden rounded-3xl bg-card shadow-lg ring-1 ring-border">
         <Tldraw
-          hideUi
+          components={HIDDEN_UI}
           onMount={(ed) => {
-            editorRef.current = ed
+            editor.current = ed
             ed.setCurrentTool('draw')
             ed.updateInstanceState({ isDebugMode: false })
           }}
@@ -305,12 +332,28 @@ export default function PlayPage({
 
       <div className="flex items-center gap-3 p-4">
         <Button
+          variant={tool === 'draw' ? 'default' : 'outline'}
+          size="lg"
+          onClick={() => { setTool('draw'); editor.current?.setCurrentTool('draw') }}
+          className="h-16 gap-2 rounded-full px-5 text-base"
+        >
+          <Pen className="h-5 w-5" />
+        </Button>
+        <Button
+          variant={tool === 'eraser' ? 'default' : 'outline'}
+          size="lg"
+          onClick={() => { setTool('eraser'); editor.current?.setCurrentTool('eraser') }}
+          className="h-16 gap-2 rounded-full px-5 text-base"
+        >
+          <Eraser className="h-5 w-5" />
+        </Button>
+        <Button
           variant="outline"
           size="lg"
           onClick={clearCanvas}
           className="h-16 gap-2 rounded-full px-6 text-base"
         >
-          <Trash2 className="h-5 w-5" /> Clear
+          <Trash2 className="h-5 w-5" />
         </Button>
         {feedback?.success ? (
           <Button

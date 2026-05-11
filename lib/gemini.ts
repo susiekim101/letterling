@@ -45,7 +45,7 @@ export async function analyzeHandwriting(
   targetLetter: string
 ): Promise<HandwritingFeedback> {
   const response = await ai.models.generateContent({
-    model: 'gemini-2.0-flash-lite',
+    model: 'gemini-2.5-flash-lite',
     contents: [
       {
         role: 'user',
