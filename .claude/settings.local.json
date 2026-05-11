@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcopy C:\\\\Users\\\\hayre\\\\dev\\\\projects\\\\letterling\\\\kid-write-spark\\\\src\\\\components\\\\ui *)",
+      "Bash(npm run *)"
+    ]
+  }
+}
