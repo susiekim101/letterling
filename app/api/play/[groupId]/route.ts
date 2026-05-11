@@ -1,4 +1,4 @@
-import { invalidPlaySessionResponse, requirePlaySession } from '@/lib/play-session'
+import { invalidPlaySessionResponse, requirePlaySession, validatePlayTabVersion } from '@/lib/play-session'
 import { getHostedSessionInvalidMessage, isHostedSessionValid } from '@/lib/session-host'
 import { MAX_LETTER_ATTEMPTS, getTargetLetter, type AttemptBudget } from '@/lib/student-writing'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -38,6 +38,9 @@ export async function GET(request: NextRequest, { params }: Params) {
   }
   if (group.play_session_version !== playSession.session.sessionVersion) {
     return invalidPlaySessionResponse('That group has been logged out. Join again to continue.', 403)
+  }
+  if (!validatePlayTabVersion(request, group.play_session_version)) {
+    return invalidPlaySessionResponse('This tab is no longer active. Re-enter the group code to continue.', 403)
   }
 
   const nowIso = new Date().toISOString()
@@ -190,6 +193,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   }
   if (group.play_session_version !== playSession.session.sessionVersion) {
     return invalidPlaySessionResponse('That group has been logged out. Join again to continue.', 403)
+  }
+  if (!validatePlayTabVersion(request, group.play_session_version)) {
+    return invalidPlaySessionResponse('This tab is no longer active. Re-enter the group code to continue.', 403)
   }
 
   if (studentId) {

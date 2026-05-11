@@ -61,12 +61,18 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const response = NextResponse.json({ groupId: group.id })
-    const playSession = createPlaySession(
-      group.id,
-      group.session_id,
-      group.play_session_version ?? 1
-    )
+    const newVersion = (group.play_session_version ?? 1) + 1
+    const { error: versionError } = await supabase
+      .from('groups')
+      .update({ play_session_version: newVersion })
+      .eq('id', group.id)
+
+    if (versionError) {
+      return Response.json({ error: 'Server error' }, { status: 500 })
+    }
+
+    const response = NextResponse.json({ groupId: group.id, tabVersion: newVersion })
+    const playSession = createPlaySession(group.id, group.session_id, newVersion)
     return setPlaySessionCookie(response, playSession)
   } catch {
     return Response.json({ error: 'Server error' }, { status: 500 })
