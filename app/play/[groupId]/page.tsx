@@ -642,7 +642,7 @@ export default function PlayPage({
         <div
           className={`mx-4 mt-3 rounded-2xl p-4 text-center text-base font-medium ${
             feedback.success
-              ? 'bg-success/15 text-success-foreground ring-1 ring-success/40'
+              ? 'bg-success/15 text-success ring-1 ring-success/40'
               : 'bg-accent text-accent-foreground'
           }`}
         >
