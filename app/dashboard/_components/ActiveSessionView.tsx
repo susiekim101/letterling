@@ -45,13 +45,17 @@ export function ActiveSessionView({
   onEnded: () => void
 }) {
   const [session, setSession] = useState<Session | null>(null)
+  const [failed, setFailed] = useState(false)
 
   const refresh = async () => {
     try {
       const res = await fetch(`/api/sessions/${sessionId}`)
-      if (!res.ok) return
+      if (!res.ok) { setFailed(true); return }
       setSession(await res.json())
-    } catch {}
+      setFailed(false)
+    } catch {
+      setFailed(true)
+    }
   }
 
   useEffect(() => {
@@ -72,6 +76,21 @@ export function ActiveSessionView({
     } catch {
       toast.error('Failed to end session')
     }
+  }
+
+  if (failed) {
+    return (
+      <div className="rounded-2xl bg-muted p-6 text-center text-sm text-muted-foreground">
+        Could not load session.{' '}
+        <button onClick={() => { setFailed(false); refresh() }} className="font-semibold underline">
+          Retry
+        </button>
+        {' '}or{' '}
+        <button onClick={onEnded} className="font-semibold underline">
+          go back
+        </button>
+      </div>
+    )
   }
 
   if (!session) {
