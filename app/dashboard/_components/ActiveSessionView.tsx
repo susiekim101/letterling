@@ -50,19 +50,47 @@ export function ActiveSessionView({
   const refresh = async () => {
     try {
       const supabase = createClient()
-      const { data, error } = await supabase
+
+      const { data: sessionData, error: sessionError } = await supabase
         .from('sessions')
-        .select(`*, groups(*, students(*, student_progress(*)))`)
+        .select('*')
         .eq('id', sessionId)
         .single()
-      if (error || !data) {
-        // Stale/broken session — clean it up and return to dashboard
+
+      if (sessionError || !sessionData) {
         await supabase.from('sessions').update({ status: 'inactive' }).eq('id', sessionId)
         onEnded()
         return
       }
-      setSession(data as Session)
-      setFailed(false)
+
+      const { data: groups } = await supabase
+        .from('groups')
+        .select('*')
+        .eq('session_id', sessionId)
+        .eq('status', 'active')
+
+      const enrichedGroups: Group[] = await Promise.all(
+        (groups ?? []).map(async (group) => {
+          const { data: students } = await supabase
+            .from('students')
+            .select('*')
+            .eq('group_id', group.id)
+
+          const enrichedStudents: Student[] = await Promise.all(
+            (students ?? []).map(async (student) => {
+              const { data: progress } = await supabase
+                .from('student_progress')
+                .select('*')
+                .eq('student_id', student.id)
+              return { ...student, student_progress: progress ?? [] }
+            })
+          )
+
+          return { ...group, students: enrichedStudents }
+        })
+      )
+
+      setSession({ ...sessionData, groups: enrichedGroups })
     } catch {
       onEnded()
     }
