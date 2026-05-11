@@ -67,19 +67,19 @@ export default function JoinPage() {
               {n}
             </button>
           ))}
-          <button
-            onClick={back}
-            className="grid aspect-square place-items-center rounded-2xl bg-muted text-muted-foreground shadow-sm ring-1 ring-border transition active:scale-95"
-          >
-            <Delete className="h-6 w-6" />
-          </button>
+          <div />
           <button
             onClick={() => press('0')}
             className="aspect-square rounded-2xl bg-card font-display text-3xl font-bold shadow-sm ring-1 ring-border transition active:scale-95 active:bg-muted"
           >
             0
           </button>
-          <div />
+          <button
+            onClick={back}
+            className="grid aspect-square place-items-center rounded-2xl bg-muted text-muted-foreground shadow-sm ring-1 ring-border transition active:scale-95"
+          >
+            <Delete className="h-6 w-6" />
+          </button>
         </div>
 
         <Button
