@@ -48,3 +48,4 @@ next-env.d.ts
 .agent-runtime
 .build*
 .planning
+node_modules

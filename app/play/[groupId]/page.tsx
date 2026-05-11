@@ -160,6 +160,15 @@ export default function PlayPage({
   }, [fetchState, stage, tabReady])
 
   useEffect(() => {
+    if (stage !== 'write' || !myStudentId || !state) return
+    const budget = state.attemptBudget
+    if (budget?.student_id === myStudentId && budget.remaining <= 0) {
+      handleNextLetter().catch(console.error)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.attemptBudget])
+
+  useEffect(() => {
     if (!state) return
     const allDone =
       state.students.length > 0 &&
@@ -429,18 +438,22 @@ export default function PlayPage({
             toast.error('This student has already finished')
             return
           }
-          const res = await playFetch(`/api/play/${groupId}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ studentId: student.id }),
-          })
-          await readResponse<{ ok: true }>(res)
-          setMyStudentId(student.id)
-          const s = await fetchState()
-          const p = s.progress.find((x) => x.student_id === student.id)
-          setLetterStartIdx(p?.next_char ?? 0)
-          setStage(p?.finished_last_char && p.goal_word !== null ? 'fullname' : 'write')
-          void playSpeech(`${student.first_name}'s turn!`)
+          try {
+            const res = await playFetch(`/api/play/${groupId}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ studentId: student.id }),
+            })
+            await readResponse<{ ok: true }>(res)
+            setMyStudentId(student.id)
+            const s = await fetchState()
+            const p = s.progress.find((x) => x.student_id === student.id)
+            setLetterStartIdx(p?.next_char ?? 0)
+            setStage(p?.finished_last_char && p.goal_word !== null ? 'fullname' : 'write')
+            void playSpeech(`${student.first_name}'s turn!`)
+          } catch (error) {
+            toast.error((error as Error).message)
+          }
         }}
       />
     )

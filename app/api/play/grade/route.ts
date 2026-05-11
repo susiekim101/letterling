@@ -14,6 +14,7 @@ type GradeResponse = HandwritingFeedback & {
   attemptsUsed: number
   blockedReason?: 'attempt_limit'
   targetLetter: string
+  // HandwritingFeedback already includes recognizedLetter and isWrongLetter
 }
 
 function jsonFailure(
@@ -241,6 +242,8 @@ export async function POST(request: NextRequest) {
     console.error('Grade error:', e)
 
     return Response.json({
+      recognizedLetter: null,
+      isWrongLetter: false,
       isSuccessful: false,
       feedbackText: "Hmm, let's try that again!",
       annotations: [],

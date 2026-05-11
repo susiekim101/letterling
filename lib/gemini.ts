@@ -10,6 +10,8 @@ export interface StrokeAnnotation {
 }
 
 export interface HandwritingFeedback {
+  recognizedLetter: string | null  // what the drawing most looks like, uppercase single char
+  isWrongLetter: boolean           // true when recognizedLetter doesn't match the target
   isSuccessful: boolean
   feedbackText: string     // 1-2 sentences of verbal encouragement/guidance
   annotations: StrokeAnnotation[]  // passed to editor.createShapes()
@@ -20,6 +22,8 @@ const SYSTEM_PROMPT =
 Analyze the child's handwriting attempt and provide warm, positive feedback appropriate for their age.
 Always respond with valid JSON matching this exact schema:
 {
+  "recognizedLetter": string | null,
+  "isWrongLetter": boolean,
   "isSuccessful": boolean,
   "feedbackText": string,
   "annotations": [
@@ -31,14 +35,18 @@ Always respond with valid JSON matching this exact schema:
     }
   ]
 }
-Rules:
-- isSuccessful: true if an adult can recognize the intended letter, even if wobbly or imperfect. Be very generous — this is a 3-6 year old child. Only set false if the letter is genuinely unrecognizable or is clearly a different letter.
-- If isSuccessful is true, annotations MUST be empty []. Do not add corrections when the letter is recognized.
-- feedbackText: 1-2 sentences spoken aloud to the child. If isSuccessful is true, give warm celebration (e.g. "Great job! That looks just like the letter S!"). If there are annotations, describe each circled area by color: the 1st circle is RED, the 2nd is BLUE, the 3rd is GREEN. Example: "Good try! Look at the red circle — try pulling that line down more. The blue circle shows where to start a bit higher."
-- annotations: only when isSuccessful is false — up to 3 problem spots, each marking a distinct error in a different part of the image. Empty [] if isSuccessful is true.
-- center: the center point of the problem area using a 0-1000 scale where (0,0) is top-left and (1000,1000) is bottom-right. Never use raw pixel values.
+Rules (evaluate in this order):
+1. recognizedLetter: Look at the drawing and decide what letter it most resembles. Return a single uppercase letter (e.g. "B"), or null if it is just scribbles with no recognizable letter shape at all.
+2. isWrongLetter: true if recognizedLetter is not null AND it does not match the target letter. When isWrongLetter is true, isSuccessful MUST be false and annotations MUST be [].
+3. isSuccessful: true if the drawing matches the target letter and an adult can recognize it, even if wobbly or imperfect. Be very generous — this is a 3-6 year old. Only false if unrecognizable or a different letter.
+4. feedbackText: 1-2 sentences spoken aloud to the child.
+   - If isWrongLetter is true: be kind and tell them what their letter looks like, then encourage them to try the right one. Never say "wrong". Example: "Good try! That looks like a B! We're practicing the letter D — give it another go!"
+   - If isSuccessful is true: give warm celebration. Example: "Great job! That looks just like the letter S!"
+   - If isSuccessful is false and isWrongLetter is false: describe the circled areas by color — the 1st circle is RED, the 2nd is BLUE, the 3rd is GREEN. Example: "Good try! Look at the red circle — try pulling that line down more."
+5. annotations: only when isSuccessful is false AND isWrongLetter is false — up to 3 problem spots. Empty [] otherwise.
+- center: 0-1000 scale where (0,0) is top-left and (1000,1000) is bottom-right. Never use raw pixel values.
 - error_type examples: "angle", "direction", "length", "curve", "start_point"
-- instruction: one short phrase describing what is wrong at this exact spot, e.g. "Pull down more", "Start higher", "Curve left here", "Too short"`
+- instruction: one short phrase, e.g. "Pull down more", "Start higher", "Curve left here", "Too short"`
 
 export async function analyzeHandwriting(
   imageBase64: string,
@@ -77,13 +85,18 @@ export async function analyzeHandwriting(
   // Validate required shape before trusting the response
   if (
     typeof parsed.isSuccessful !== 'boolean' ||
+    typeof parsed.isWrongLetter !== 'boolean' ||
     typeof parsed.feedbackText !== 'string' ||
     !Array.isArray(parsed.annotations)
   ) {
     throw new Error('Unexpected Gemini response shape')
   }
 
-  // Enforce contract: successful means no corrections
+  // Enforce contracts
+  if (parsed.isWrongLetter) {
+    parsed.isSuccessful = false
+    parsed.annotations = []
+  }
   if (parsed.isSuccessful) parsed.annotations = []
   // Cap to 3 annotations regardless of what Gemini returns
   parsed.annotations = parsed.annotations.slice(0, 3)
