@@ -1,8 +1,7 @@
 import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  // tldraw already ships build output. Re-transpiling it in production can
-  // cause duplicate module instances, which breaks editor state on Vercel.
+  transpilePackages: ['tldraw'],
   serverExternalPackages: ['@elevenlabs/elevenlabs-js'],
 }
 
