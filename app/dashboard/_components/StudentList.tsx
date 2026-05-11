@@ -14,7 +14,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Plus, UserPlus, Mail, Eye, EyeOff } from 'lucide-react'
+import { Plus, UserPlus, Mail, Eye, EyeOff, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 export type Student = {
@@ -36,6 +36,18 @@ export function StudentList({ teacherId }: { teacherId: string }) {
       if (!res.ok) throw new Error('Failed to load students')
       return res.json() as Promise<Student[]>
     },
+  })
+
+  const deleteStudent = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/students/${id}`, { method: 'DELETE' })
+      if (!res.ok && res.status !== 204) throw new Error('Failed to delete student')
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['students', teacherId] })
+      toast.success('Student removed')
+    },
+    onError: (e: Error) => toast.error(e.message),
   })
 
   return (
@@ -75,6 +87,14 @@ export function StudentList({ teacherId }: { teacherId: string }) {
                   </p>
                 )}
               </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => deleteStudent.mutate(s.id)}
+                className="h-8 w-8 rounded-full p-0 text-muted-foreground hover:text-destructive"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
             </li>
           ))}
         </ul>

@@ -25,8 +25,8 @@ export default function Landing() {
           <span className="font-display text-xl font-bold">Letterling</span>
         </div>
         <div className="flex gap-2">
-          <Button variant="ghost" asChild>
-            <Link href="/play">Student? Join</Link>
+          <Button asChild className="rounded-full bg-emerald-500 text-white hover:bg-emerald-600">
+            <Link href="/play">Join session</Link>
           </Button>
           <Button variant="ghost" asChild>
             <Link href="/login">Log in</Link>
