@@ -32,15 +32,19 @@ type GroupState = {
   attemptBudget: AttemptBudget | null
 }
 
-function speak(text: string) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
-  try {
-    window.speechSynthesis.cancel()
-    const u = new SpeechSynthesisUtterance(text)
-    u.rate = 0.95
-    u.pitch = 1.1
-    window.speechSynthesis.speak(u)
-  } catch {}
+function stripEmotionTags(text: string) {
+  return text.replace(/\[.*?\]/g, '').trim()
+}
+
+function base64ToObjectUrl(base64: string) {
+  const binary = window.atob(base64)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+
+  return URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
 }
 
 function pickNextStudent(state: GroupState, currentId: string): Student | null {
@@ -76,6 +80,9 @@ export default function PlayPage({
   const [submitting, setSubmitting] = useState(false)
   const [tool, setTool] = useState<'draw' | 'eraser'>('draw')
   const whiteboard = useRef<PracticeWhiteboardHandle | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audioUrlRef = useRef<string | null>(null)
+  const speechRequestIdRef = useRef(0)
 
   const redirectToJoin = useCallback(
     (message: string) => {
@@ -134,6 +141,97 @@ export default function PlayPage({
     setFeedback(null)
   }, [])
 
+  const stopAudioPlayback = useCallback(() => {
+    speechRequestIdRef.current += 1
+
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+      audioRef.current = null
+    }
+
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = null
+    }
+
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
+  }, [])
+
+  const playBrowserFallback = useCallback((text: string) => {
+    const cleanText = stripEmotionTags(text)
+    if (!cleanText || typeof window === 'undefined' || !('speechSynthesis' in window)) return
+
+    try {
+      window.speechSynthesis.cancel()
+      const utterance = new SpeechSynthesisUtterance(cleanText)
+      utterance.rate = 0.95
+      utterance.pitch = 1.1
+      window.speechSynthesis.speak(utterance)
+    } catch (error) {
+      console.warn('Browser TTS fallback failed', error)
+    }
+  }, [])
+
+  const playSpeech = useCallback(
+    async (text: string) => {
+      const cleanText = stripEmotionTags(text)
+      if (!cleanText || typeof window === 'undefined') return
+
+      stopAudioPlayback()
+      const requestId = speechRequestIdRef.current
+
+      try {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: cleanText, groupId }),
+        })
+
+        if (!res.ok) {
+          const errorText = await res.text()
+          throw new Error(errorText || 'Failed to synthesize speech')
+        }
+
+        const { audioBase64 } = (await res.json()) as { audioBase64?: string }
+        if (!audioBase64) {
+          throw new Error('Missing synthesized audio')
+        }
+
+        if (requestId !== speechRequestIdRef.current) {
+          return
+        }
+
+        const audioUrl = base64ToObjectUrl(audioBase64)
+        audioUrlRef.current = audioUrl
+
+        const audio = new Audio(audioUrl)
+        audioRef.current = audio
+        audio.onended = () => {
+          if (audioRef.current === audio) {
+            audioRef.current = null
+          }
+          if (audioUrlRef.current === audioUrl) {
+            URL.revokeObjectURL(audioUrl)
+            audioUrlRef.current = null
+          }
+        }
+
+        await audio.play()
+      } catch (error) {
+        console.warn('Server TTS failed, using browser fallback', error)
+        if (requestId === speechRequestIdRef.current) {
+          playBrowserFallback(cleanText)
+        }
+      }
+    },
+    [groupId, playBrowserFallback, stopAudioPlayback]
+  )
+
+  useEffect(() => stopAudioPlayback, [stopAudioPlayback])
+
   if (!state) {
     return (
       <main className="grid min-h-screen place-items-center bg-background">
@@ -142,12 +240,15 @@ export default function PlayPage({
     )
   }
 
-  if (stage === 'complete') return <CompleteScreen students={state.students} />
+  if (stage === 'complete') {
+    return <CompleteScreen students={state.students} playSpeech={playSpeech} />
+  }
 
   if (stage === 'pass' && pendingNext) {
     return (
       <PassScreen
         next={pendingNext}
+        playSpeech={playSpeech}
         onReady={async () => {
           const res = await fetch(`/api/play/${groupId}`, {
             method: 'PATCH',
@@ -245,7 +346,7 @@ export default function PlayPage({
           attemptsRemaining: data.attemptsRemaining ?? 0,
           blockedReason: data.blockedReason,
         })
-        speak(data.feedbackText)
+        void playSpeech(data.feedbackText)
       }
 
       await fetchState()
@@ -278,7 +379,7 @@ export default function PlayPage({
       if (nextS) {
         setPendingNext(nextS)
         setStage('pass')
-        speak(`${nextS.first_name}, your turn!`)
+        void playSpeech(`${nextS.first_name}, your turn!`)
       } else {
         setStage('complete')
       }
@@ -291,7 +392,7 @@ export default function PlayPage({
       if (nextS) {
         setPendingNext(nextS)
         setStage('pass')
-        speak(`${nextS.first_name}, your turn!`)
+        void playSpeech(`${nextS.first_name}, your turn!`)
       }
     }
   }
@@ -442,10 +543,18 @@ function PickName({
   )
 }
 
-function PassScreen({ next, onReady }: { next: Student; onReady: () => void }) {
+function PassScreen({
+  next,
+  onReady,
+  playSpeech,
+}: {
+  next: Student
+  onReady: () => void
+  playSpeech: (text: string) => Promise<void>
+}) {
   useEffect(() => {
-    speak(`${next.first_name}, your turn!`)
-  }, [next.first_name])
+    void playSpeech(`${next.first_name}, your turn!`)
+  }, [next.first_name, playSpeech])
 
   return (
     <main className="grid min-h-screen place-items-center bg-gradient-to-b from-accent/40 to-background px-6">
@@ -466,10 +575,16 @@ function PassScreen({ next, onReady }: { next: Student; onReady: () => void }) {
   )
 }
 
-function CompleteScreen({ students }: { students: Student[] }) {
+function CompleteScreen({
+  students,
+  playSpeech,
+}: {
+  students: Student[]
+  playSpeech: (text: string) => Promise<void>
+}) {
   useEffect(() => {
-    speak('All done! Great job everyone!')
-  }, [])
+    void playSpeech('All done! Great job everyone!')
+  }, [playSpeech])
 
   return (
     <main className="relative grid min-h-screen place-items-center overflow-hidden bg-gradient-to-b from-background to-accent/40 px-6">

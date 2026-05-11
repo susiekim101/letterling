@@ -1,26 +1,91 @@
-import textToSpeech from '@google-cloud/text-to-speech'
+import 'server-only'
 
-const client = new textToSpeech.TextToSpeechClient()
+import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js'
+import { createHash } from 'node:crypto'
 
-export async function synthesizeSpeech(text: string): Promise<string> {
-  const [response] = await client.synthesizeSpeech({
-    input: { text },
-    voice: {
-      languageCode: 'en-US',
-      name: 'en-US-Wavenet-F',   // warm, female voice suitable for children
-      ssmlGender: 'FEMALE',
-    },
-    audioConfig: {
-      audioEncoding: 'MP3',
-      speakingRate: 0.9,          // slightly slower for young children
-      pitch: 2.0,                 // slightly higher, friendly tone
-    },
+const VOICE_ID = 'eppqEXVumQ3CfdndcIBd'
+const PRIMARY_MODEL = 'eleven_v3'
+const FALLBACK_MODEL = 'eleven_multilingual_v2'
+const OUTPUT_FORMAT = 'mp3_44100_128'
+
+const clipCache = new Map<string, string>()
+const inFlightRequests = new Map<string, Promise<string>>()
+
+let client: ElevenLabsClient | null = null
+
+function getClient() {
+  const apiKey = process.env.ELEVENLABS_API_KEY
+  if (!apiKey) {
+    throw new Error('Missing ELEVENLABS_API_KEY')
+  }
+
+  client ??= new ElevenLabsClient({ apiKey })
+  return client
+}
+
+function getCacheKey(text: string) {
+  return createHash('sha256')
+    .update(JSON.stringify({ text, voiceId: VOICE_ID, outputFormat: OUTPUT_FORMAT }))
+    .digest('hex')
+}
+
+async function streamToBase64(audioStream: ReadableStream<Uint8Array>) {
+  const reader = audioStream.getReader()
+  const chunks: Buffer[] = []
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) chunks.push(Buffer.from(value))
+  }
+
+  if (chunks.length === 0) {
+    throw new Error('No audio content returned from ElevenLabs')
+  }
+
+  return Buffer.concat(chunks).toString('base64')
+}
+
+async function synthesizeWithModel(text: string, modelId: string) {
+  const audioStream = await getClient().textToSpeech.convert(VOICE_ID, {
+    modelId,
+    outputFormat: OUTPUT_FORMAT,
+    text,
   })
 
-  const audioContent = response.audioContent
-  if (!audioContent) throw new Error('No audio content returned from TTS')
+  return streamToBase64(audioStream)
+}
 
-  // Return base64 string regardless of whether it came back as Buffer or string
-  if (typeof audioContent === 'string') return audioContent
-  return Buffer.from(audioContent).toString('base64')
+async function synthesizeWithFallback(text: string) {
+  try {
+    return await synthesizeWithModel(text, PRIMARY_MODEL)
+  } catch (primaryError) {
+    console.warn(
+      `ElevenLabs TTS failed for ${PRIMARY_MODEL}, retrying ${FALLBACK_MODEL}`,
+      primaryError
+    )
+    return synthesizeWithModel(text, FALLBACK_MODEL)
+  }
+}
+
+export async function synthesizeSpeech(text: string): Promise<string> {
+  const cacheKey = getCacheKey(text)
+  const cached = clipCache.get(cacheKey)
+  if (cached) return cached
+
+  const inFlight = inFlightRequests.get(cacheKey)
+  if (inFlight) return inFlight
+
+  const request = (async () => {
+    try {
+      const audioBase64 = await synthesizeWithFallback(text)
+      clipCache.set(cacheKey, audioBase64)
+      return audioBase64
+    } finally {
+      inFlightRequests.delete(cacheKey)
+    }
+  })()
+
+  inFlightRequests.set(cacheKey, request)
+  return request
 }

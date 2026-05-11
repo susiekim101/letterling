@@ -2,7 +2,7 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   transpilePackages: ['tldraw'],
-  serverExternalPackages: ['@google-cloud/text-to-speech'],
+  serverExternalPackages: ['@elevenlabs/elevenlabs-js'],
 }
 
 export default nextConfig
