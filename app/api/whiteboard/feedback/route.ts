@@ -25,23 +25,79 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  const { data: group, error: groupError } = await supabase
+    .from('groups')
+    .select('id, session_id, teacher_id')
+    .eq('id', groupId)
+    .eq('teacher_id', user.id)
+    .single()
+
+  if (groupError || !group || group.session_id !== sessionId) {
+    return Response.json({ error: 'Group not found' }, { status: 404 })
+  }
+
+  const { data: session, error: sessionError } = await supabase
+    .from('sessions')
+    .select('id, teacher_id')
+    .eq('id', sessionId)
+    .eq('teacher_id', user.id)
+    .single()
+
+  if (sessionError || !session) {
+    return Response.json({ error: 'Session not found' }, { status: 404 })
+  }
+
+  const { data: student, error: studentError } = await supabase
+    .from('students')
+    .select('id, teacher_id')
+    .eq('id', studentId)
+    .eq('teacher_id', user.id)
+    .single()
+
+  if (studentError || !student) {
+    return Response.json({ error: 'Student not found' }, { status: 404 })
+  }
+
+  const { data: membership, error: membershipError } = await supabase
+    .from('group_memberships')
+    .select('id')
+    .eq('session_id', sessionId)
+    .eq('group_id', groupId)
+    .eq('student_id', studentId)
+    .eq('teacher_id', user.id)
+    .neq('status', 'removed')
+    .maybeSingle()
+
+  if (membershipError) {
+    return Response.json({ error: membershipError.message }, { status: 500 })
+  }
+
+  if (!membership) {
+    return Response.json({ error: 'Student is not part of this group.' }, { status: 403 })
+  }
+
   const feedback = await analyzeHandwriting(imageBase64, mimeType, targetLetter)
   let attemptNumber: number | null = null
 
   if (typeof letterIndex === 'number') {
-    const { count } = await supabase
+    const { count, error: countError } = await supabase
       .from('whiteboard_states')
       .select('id', { count: 'exact', head: true })
       .eq('session_id', sessionId)
       .eq('group_id', groupId)
       .eq('student_id', studentId)
+      .eq('teacher_id', user.id)
       .eq('letter_index', letterIndex)
+
+    if (countError) {
+      return Response.json({ error: countError.message }, { status: 500 })
+    }
 
     attemptNumber = (count ?? 0) + 1
   }
 
   // Persist to whiteboard_states
-  await supabase.from('whiteboard_states').insert({
+  const { error: insertError } = await supabase.from('whiteboard_states').insert({
     session_id: sessionId,
     student_id: studentId,
     teacher_id: user.id,
@@ -60,6 +116,10 @@ export async function POST(request: NextRequest) {
     gemini_whiteboard_feedback: { annotations: feedback.annotations },
     is_successful: feedback.isSuccessful,
   })
+
+  if (insertError) {
+    return Response.json({ error: insertError.message }, { status: 500 })
+  }
 
   return Response.json(feedback)
 }

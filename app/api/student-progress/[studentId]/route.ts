@@ -10,6 +10,17 @@ export async function GET(
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const { data: student, error: studentError } = await supabase
+    .from('students')
+    .select('id, first_name')
+    .eq('id', studentId)
+    .eq('teacher_id', user.id)
+    .single()
+
+  if (studentError || !student) {
+    return Response.json({ error: 'Student not found' }, { status: 404 })
+  }
+
   // Fetch existing progress or auto-create a row
   let { data, error } = await supabase
     .from('student_progress')
@@ -18,21 +29,14 @@ export async function GET(
     .single()
 
   if (error && error.code === 'PGRST116') {
-    // No row yet — create one
-    const { data: student } = await supabase
-      .from('students')
-      .select('first_name')
-      .eq('id', studentId)
-      .single()
-
     const insert = await supabase
       .from('student_progress')
-      .insert({
+      .upsert({
         student_id: studentId,
         teacher_id: user.id,
         next_char: 0,
         goal_word: student?.first_name ?? null,
-      })
+      }, { onConflict: 'student_id' })
       .select()
       .single()
 
@@ -52,6 +56,17 @@ export async function PUT(
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const { data: student, error: studentError } = await supabase
+    .from('students')
+    .select('id')
+    .eq('id', studentId)
+    .eq('teacher_id', user.id)
+    .single()
+
+  if (studentError || !student) {
+    return Response.json({ error: 'Student not found' }, { status: 404 })
+  }
 
   const body = await request.json()
   const { next_char, goal_word } = body

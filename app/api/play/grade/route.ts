@@ -1,7 +1,7 @@
 import { analyzeHandwriting, type HandwritingFeedback } from '@/lib/gemini'
 import { invalidPlaySessionResponse, readPlaySession } from '@/lib/play-session'
 import { getHostedSessionInvalidMessage, isHostedSessionValid } from '@/lib/session-host'
-import { MAX_LETTER_ATTEMPTS, getTargetLetter } from '@/lib/student-writing'
+import { MAX_LETTER_ATTEMPTS, cleanStudentName, getTargetLetter } from '@/lib/student-writing'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { NextRequest } from 'next/server'
 
@@ -119,6 +119,7 @@ export async function POST(request: NextRequest) {
     .from('student_progress')
     .select('student_id, next_char, goal_word, finished_last_char')
     .eq('student_id', student.id)
+    .eq('teacher_id', group.teacher_id)
     .maybeSingle()
 
   if (progressResult.error) {
@@ -148,11 +149,10 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  if (progress.finished_last_char) {
-    return jsonFailure('This word is already finished.', { status: 409 })
-  }
-
-  const targetLetter = getTargetLetter(progress.goal_word, student.first_name, progress.next_char)
+  const isFullNameStage = progress.finished_last_char && progress.goal_word !== null
+  const targetLetter = isFullNameStage
+    ? cleanStudentName(progress.goal_word ?? student.first_name)
+    : getTargetLetter(progress.goal_word, student.first_name, progress.next_char)
 
   if (!targetLetter) {
     return jsonFailure('This word is already finished.', { status: 409 })
@@ -164,6 +164,7 @@ export async function POST(request: NextRequest) {
     .eq('session_id', group.session_id)
     .eq('group_id', group.id)
     .eq('student_id', student.id)
+    .eq('teacher_id', group.teacher_id)
     .eq('letter_index', progress.next_char)
 
   if (attemptError) {

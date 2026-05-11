@@ -1,3 +1,5 @@
+import { isValidGroupCodeInput } from '@/lib/group-code'
+import { consumeJoinAttempt, getJoinThrottleKey } from '@/lib/join-throttle'
 import { createPlaySession, setPlaySessionCookie } from '@/lib/play-session'
 import { getHostedSessionInvalidMessage, isHostedSessionValid } from '@/lib/session-host'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -9,8 +11,22 @@ export async function GET(request: NextRequest) {
     const code = request.nextUrl.searchParams.get('code')
     if (!code) return Response.json({ error: 'code is required' }, { status: 400 })
 
+    if (!isValidGroupCodeInput(code)) {
+      return Response.json({ error: 'Enter a valid classroom code.' }, { status: 400 })
+    }
+
+    const throttle = consumeJoinAttempt(getJoinThrottleKey(request.headers))
+    if (!throttle.allowed) {
+      return Response.json(
+        {
+          error: 'Too many join attempts. Wait a moment and try again.',
+          retryAfterSeconds: throttle.retryAfterSeconds,
+        },
+        { status: 429, headers: { 'Retry-After': String(throttle.retryAfterSeconds) } }
+      )
+    }
+
     const parsed = parseInt(code, 10)
-    if (isNaN(parsed)) return Response.json({ error: 'Invalid code' }, { status: 400 })
 
     const supabase = createAdminClient()
     const { data: group, error } = await supabase
@@ -19,9 +35,17 @@ export async function GET(request: NextRequest) {
       .eq('group_code', parsed)
       .single()
 
-    if (error || !group) return Response.json({ error: 'Group not found' }, { status: 404 })
+    if (error || !group) {
+      return Response.json(
+        { error: "That classroom code isn't ready right now. Ask your teacher to check it." },
+        { status: 404 }
+      )
+    }
     if (group.status !== 'active' || !group.session_id) {
-      return Response.json({ error: 'Session is not active' }, { status: 400 })
+      return Response.json(
+        { error: "That classroom code isn't ready right now. Ask your teacher to check it." },
+        { status: 400 }
+      )
     }
 
     const { data: session, error: sessionError } = await supabase
@@ -31,7 +55,10 @@ export async function GET(request: NextRequest) {
       .single()
 
     if (sessionError || !isHostedSessionValid(session)) {
-      return Response.json({ error: getHostedSessionInvalidMessage() }, { status: 403 })
+      return Response.json(
+        { error: getHostedSessionInvalidMessage() },
+        { status: 403 }
+      )
     }
 
     const response = NextResponse.json({ groupId: group.id })

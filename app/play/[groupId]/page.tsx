@@ -56,6 +56,7 @@ function pickNextStudent(state: GroupState, currentId: string): Student | null {
   const idx = students.findIndex((s) => s.id === currentId)
   for (let i = 1; i <= students.length; i++) {
     const cand = students[(idx + i) % students.length]
+    if (cand.id === currentId) continue
     const p = progress.find((x) => x.student_id === cand.id)
     if (p && (!p.finished_last_char || p.goal_word !== null)) return cand
   }
@@ -508,6 +509,9 @@ export default function PlayPage({
         setPendingNext(nextS)
         setStage('pass')
         void playSpeech(`${nextS.first_name}, your turn!`)
+      } else {
+        setLetterStartIdx(myNew.next_char)
+        setFeedback(null)
       }
     }
   }

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Clock3, LogOut, Square, UserMinus, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { CreateSessionDialog } from './CreateSessionDialog'
+import { formatGroupCode } from '@/lib/group-code'
 import { cleanStudentName } from '@/lib/student-writing'
 
 type StudentProgress = {
@@ -196,7 +197,7 @@ function GroupCard({
   onLogout: () => void
   onRemoveStudent: (studentId: string) => void
 }) {
-  const code = String(group.group_code).padStart(4, '0')
+  const code = formatGroupCode(group.group_code)
   const doneCount = group.students.filter((student) => getProgressDisplay(student).done).length
 
   return (
