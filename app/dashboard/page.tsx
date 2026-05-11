@@ -24,17 +24,24 @@ export default function Dashboard() {
   useEffect(() => {
     if (!user) return
     const supabase = createClient()
-    supabase
-      .from('sessions')
-      .select('id')
-      .eq('teacher_id', user.id)
-      .eq('status', 'active')
-      .maybeSingle()
-      .then(({ data }) => {
+
+    const loadActiveSession = async () => {
+      try {
+        const { data } = await supabase
+          .from('sessions')
+          .select('id')
+          .eq('teacher_id', user.id)
+          .eq('status', 'active')
+          .maybeSingle()
+
         if (data?.id) setActiveSessionId(data.id)
-      })
-      .catch(() => {})
-      .finally(() => setSessionChecked(true))
+      } catch {}
+      finally {
+        setSessionChecked(true)
+      }
+    }
+
+    void loadActiveSession()
   }, [user])
 
   const handleSignOut = async () => {
