@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { toast } from 'sonner'
-import { PenLine } from 'lucide-react'
+import { PenLine, ArrowLeft } from 'lucide-react'
 
 export default function Login() {
   const router = useRouter()
@@ -30,6 +30,9 @@ export default function Login() {
   return (
     <main className="grid min-h-screen place-items-center bg-background px-4">
       <div className="w-full max-w-md rounded-3xl bg-card p-8 shadow-sm ring-1 ring-border">
+        <Link href="/" className="mb-4 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" /> Back to home
+        </Link>
         <Link href="/" className="mb-6 flex items-center gap-2">
           <div className="grid h-9 w-9 place-items-center rounded-2xl bg-primary text-primary-foreground">
             <PenLine className="h-5 w-5" />

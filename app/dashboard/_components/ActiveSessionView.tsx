@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Square, Clock, Users } from 'lucide-react'
 import { toast } from 'sonner'
+import { createClient } from '@/lib/supabase/client'
 import { CreateSessionDialog } from './CreateSessionDialog'
 
 type StudentProgress = {
@@ -49,9 +50,14 @@ export function ActiveSessionView({
 
   const refresh = async () => {
     try {
-      const res = await fetch(`/api/sessions/${sessionId}`)
-      if (!res.ok) { setFailed(true); return }
-      setSession(await res.json())
+      const supabase = createClient()
+      const { data, error } = await supabase
+        .from('sessions')
+        .select(`*, groups(*, students(*, student_progress(*)))`)
+        .eq('id', sessionId)
+        .single()
+      if (error || !data) { setFailed(true); return }
+      setSession(data as Session)
       setFailed(false)
     } catch {
       setFailed(true)
@@ -66,11 +72,9 @@ export function ActiveSessionView({
 
   const endSession = async () => {
     try {
-      await fetch(`/api/sessions/${sessionId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'inactive' }),
-      })
+      const supabase = createClient()
+      await supabase.from('groups').update({ status: 'inactive', current_student_id: null }).eq('session_id', sessionId)
+      await supabase.from('sessions').update({ status: 'inactive', ended_at: new Date().toISOString() }).eq('id', sessionId)
       toast.success('Session ended')
       onEnded()
     } catch {
