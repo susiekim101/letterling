@@ -255,8 +255,9 @@ export default function PlayPage({
     )
   }
 
-  const me = state.students.find((s) => s.id === myStudentId)!
-  const myProg = state.progress.find((p) => p.student_id === myStudentId)!
+  const me = state.students.find((s) => s.id === myStudentId)
+  const myProg = state.progress.find((p) => p.student_id === myStudentId)
+  if (!me || !myProg) return null
   const nameLetters = cleanName(me.first_name)
   const letter = nameLetters[myProg.next_char] ?? ''
   const displayLetter = myProg.next_char === 0 ? letter.toUpperCase() : letter.toLowerCase()
@@ -293,10 +294,6 @@ export default function PlayPage({
       const originX = isFinite(minX) ? minX - 32 : 0
       const originY = isFinite(minY) ? minY - 32 : 0
 
-      console.log('[annotation] image size:', result.width, 'x', result.height)
-      console.log('[annotation] shape bounds minX/minY:', minX, minY)
-      console.log('[annotation] origin:', originX, originY)
-
       const imageBase64 = await blobToBase64(result.blob)
       const checkTarget = stage === 'fullname' ? me.first_name : displayLetter
       const res = await fetch('/api/play/grade', {
@@ -305,7 +302,6 @@ export default function PlayPage({
         body: JSON.stringify({ imageBase64, mimeType: 'image/png', targetLetter: checkTarget }),
       })
       const data = await res.json()
-      console.log('[annotation] gemini annotations:', JSON.stringify(data.annotations, null, 2))
       // Gemini returns coords on a 0-1000 normalized scale — convert to image pixels
       const imgW = result.width
       const imgH = result.height
@@ -324,65 +320,67 @@ export default function PlayPage({
   }
 
   const handleNextLetter = async () => {
-    const nextChar = myProg.next_char + 1
-    await fetch(`/api/play/${groupId}/progress`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ studentId: myStudentId, next_char: nextChar }),
-    })
-    // Clear annotation arrows before moving on
-    renderAnnotations([])
-    clearCanvas()
-    const s = await fetchState()
-    const myNew = s.progress.find((p) => p.student_id === myStudentId)!
-
-    if (s.progress.every((p) => p.finished_last_char)) {
-      setStage('complete')
-      return
-    }
-
-    if (myNew.finished_last_char) {
-      // All letters done — move to full name writing stage before passing
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      const nextChar = myProg.next_char + 1
+      await fetch(`/api/play/${groupId}/progress`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentId: myStudentId, next_char: nextChar }),
+      })
       renderAnnotations([])
       clearCanvas()
-      setFeedback(null)
-      setStage('fullname')
-      speak('Amazing! Now write your whole name!')
-      return
-    }
+      const s = await fetchState()
+      const myNew = s.progress.find((p) => p.student_id === myStudentId)
 
-    const lettersThisTurn = myNew.next_char - letterStartIdx
-    if (lettersThisTurn >= s.group.letters_per_turn) {
+      if (myNew?.finished_last_char) {
+        setFeedback(null)
+        setStage('fullname')
+        speak('Amazing! Now write your whole name!')
+        return
+      }
+
+      const lettersThisTurn = (myNew?.next_char ?? nextChar) - letterStartIdx
+      if (lettersThisTurn >= s.group.letters_per_turn) {
+        const nextS = pickNextStudent(s, myStudentId!)
+        if (nextS) {
+          setPendingNext(nextS)
+          setStage('pass')
+          speak(`${nextS.first_name}, your turn!`)
+        }
+      }
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleFullNameDone = async () => {
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      await fetch(`/api/play/${groupId}/progress`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ studentId: myStudentId, goal_word: null }),
+      })
+      renderAnnotations([])
+      clearCanvas()
+      const s = await fetchState()
+      if (s.progress.every((p) => p.finished_last_char && p.goal_word === null)) {
+        setStage('complete')
+        return
+      }
       const nextS = pickNextStudent(s, myStudentId!)
       if (nextS) {
         setPendingNext(nextS)
         setStage('pass')
         speak(`${nextS.first_name}, your turn!`)
+      } else {
+        setStage('complete')
       }
-    }
-  }
-
-  const handleFullNameDone = async () => {
-    // Mark full name as written by clearing goal_word
-    await fetch(`/api/play/${groupId}/progress`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ studentId: myStudentId, goal_word: null }),
-    })
-    renderAnnotations([])
-    clearCanvas()
-    const s = await fetchState()
-    if (s.progress.every((p) => p.finished_last_char && p.goal_word === null)) {
-      setStage('complete')
-      return
-    }
-    const nextS = pickNextStudent(s, myStudentId!)
-    if (nextS) {
-      setPendingNext(nextS)
-      setStage('pass')
-      speak(`${nextS.first_name}, your turn!`)
-    } else {
-      setStage('complete')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -471,6 +469,7 @@ export default function PlayPage({
           <Button
             size="lg"
             onClick={stage === 'fullname' ? handleFullNameDone : handleNextLetter}
+            disabled={submitting}
             className="h-16 flex-1 gap-2 rounded-full text-xl"
           >
             <ArrowRight className="h-6 w-6" />
@@ -550,7 +549,7 @@ function PassScreen({ next, onReady }: { next: Student; onReady: () => void }) {
           onClick={onReady}
           className="mt-12 h-16 rounded-full px-12 text-2xl"
         >
-          I'm ready
+          I&apos;m ready
         </Button>
       </div>
     </main>
